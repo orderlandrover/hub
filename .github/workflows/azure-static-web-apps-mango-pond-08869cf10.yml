@@ -2,12 +2,10 @@ name: Azure Static Web Apps CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -16,38 +14,41 @@ jobs:
     runs-on: ubuntu-latest
     name: Build and Deploy Job
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
           lfs: false
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install deps
+      # --- Build Vite app ---
+      - name: Install deps (app)
         run: npm ci
 
-      - name: Build app
+      - name: Build app (Vite → dist)
         run: npm run build
 
-      # Deploy the pre-built Vite artifact (dist) directly
+      # --- Deploy: upload prebuilt dist/ and Functions in api/ ---
       - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
-          app_location: 'dist'       # point directly at dist
-          skip_app_build: true       # don't let the action rebuild
-          # api_location: 'api'      # uncomment when you add Azure Functions
+          app_location: 'dist'     # ⟵ peka direkt på dist (prebuilt)
+          skip_app_build: true     # ⟵ bygg inte igen i actionen
+          api_location: 'api'      # ⟵ deploya Azure Functions från /api
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     name: Close Pull Request Job
     steps:
-      - name: Close Pull Request Environment
+      - name: Close PR Environment
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
