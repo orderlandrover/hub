@@ -1,0 +1,15 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/assets/*", "/favicon.ico", "/robots.txt", "/images/*"]
+  },
+  "mimeTypes": {
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".css": "text/css",
+    ".map": "application/json",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+    ".wasm": "application/wasm"
+  }
+}
