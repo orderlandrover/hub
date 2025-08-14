@@ -4,7 +4,7 @@ import { wcRequest } from "../shared/wc";
 
 app.http("products-list", {
   methods: ["GET"],
-  authLevel: "function",
+  authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();

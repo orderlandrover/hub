@@ -6,7 +6,7 @@ import { assertEnv } from "../shared/env";
 
 app.http("import-dry-run", {
   methods: ["POST"],
-  authLevel: "function",
+  authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
