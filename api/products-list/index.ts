@@ -1,0 +1,32 @@
+import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { assertEnv } from "../shared/env";
+import { wcRequest } from "../shared/wc";
+
+app.http("products-list", {
+  methods: ["GET"],
+  authLevel: "function",
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    try {
+      assertEnv();
+      const url = new URL(req.url);
+      const page = url.searchParams.get("page") || "1";
+      const status = url.searchParams.get("status") || "any";
+      const search = url.searchParams.get("search") || "";
+      const category = url.searchParams.get("category") || "";
+
+      const qs = new URLSearchParams({ per_page: "100", page, status });
+      if (search) qs.set("search", search);
+      if (category) qs.set("category", category);
+
+      const res = await wcRequest(`/products?${qs.toString()}`);
+      const items = await res.json();
+      const total = Number(res.headers.get("x-wp-total") || items.length);
+      const pages = Number(res.headers.get("x-wp-totalpages") || 1);
+
+      return { jsonBody: { items, total, pages, page: Number(page) } };
+    } catch (e: any) {
+      ctx.error(e);
+      return { status: 500, jsonBody: { error: e.message } };
+    }
+  },
+});
