@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 // --- Starter UI for Landroverdelar.se Britpart ↔ WooCommerce integration
 // Tailwind-first, no external UI kit required.
