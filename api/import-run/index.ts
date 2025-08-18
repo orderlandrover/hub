@@ -1,8 +1,20 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { assertEnv } from "../shared/env";
 import { britpart } from "../shared/britpart";
-import { wcRequest } from "../shared/wc";
-import { toWCProduct } from "../shared/map";
+import { getProductBySku, wcRequest } from "../shared/wc";
+import { BritpartProduct, toWCProduct } from "../shared/map";
+
+async function fetchBritpartForSubcat(subId: string): Promise<BritpartProduct[]> {
+  try {
+    const r = await britpart(`?subcategory=${encodeURIComponent(subId)}`);
+    const j = await r.json();
+    return (j.items || j.data || j) as BritpartProduct[];
+  } catch {
+    const r2 = await britpart(`/parts?subcategory=${encodeURIComponent(subId)}`);
+    const j2 = await r2.json();
+    return (j2.items || j2.data || j2) as BritpartProduct[];
+  }
+}
 
 app.http("import-run", {
   methods: ["POST"],
@@ -10,37 +22,46 @@ app.http("import-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = await req.json() as { subcategoryIds: string[], categoryMap?: Record<string, number> };
-      const { subcategoryIds = [], categoryMap = {} } = body || {};
-      if (!subcategoryIds.length) return { status: 400, jsonBody: { error: "subcategoryIds required" } };
+      const body = (await req.json()) as { subcategoryIds: string[]; categoryId?: number };
+      const { subcategoryIds = [], categoryId } = body || {};
+      if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
+        return { status: 400, jsonBody: { error: "subcategoryIds required" } };
+      }
 
-      const created: any[] = [], updated: any[] = [], skipped: any[] = [];
+      let created = 0;
+      let updated = 0;
+      const errors: { sku: string; error: string }[] = [];
 
-      for (const subId of subcategoryIds) {
-        // OBS: byt endpoint mot Britparts riktiga (exempel)
-        const r = await britpart(`/products?subcategory=${encodeURIComponent(subId)}&page=1&size=200`);
-        const { items = [] } = await r.json();
+      for (const sid of subcategoryIds) {
+        const parts = await fetchBritpartForSubcat(sid);
 
-        for (const bp of items) {
-          const payload = toWCProduct(bp, categoryMap);
-          if (!payload.sku) { skipped.push({ reason: "no-sku", bp }); continue; }
-
-          // Finns SKU i WC?
-          const check = await wcRequest(`/products?sku=${encodeURIComponent(payload.sku)}`);
-          const existing = await check.json();
-          if (Array.isArray(existing) && existing.length > 0) {
-            const id = existing[0].id;
-            const res = await wcRequest(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-            updated.push(await res.json());
-          } else {
-            const res = await wcRequest(`/products`, { method: "POST", body: JSON.stringify(payload) });
-            created.push(await res.json());
+        // Batcha lite snällt
+        for (const p of parts) {
+          if (!p.partNumber) continue;
+          try {
+            const mapped = toWCProduct(p, categoryId);
+            const existing = await getProductBySku(p.partNumber);
+            if (!existing) {
+              await wcRequest(`/products`, {
+                method: "POST",
+                body: JSON.stringify(mapped),
+              });
+              created++;
+            } else {
+              await wcRequest(`/products/${existing.id}`, {
+                method: "PUT",
+                body: JSON.stringify(mapped),
+              });
+              updated++;
+            }
+          } catch (err: any) {
+            errors.push({ sku: p.partNumber, error: String(err?.message || err) });
           }
         }
       }
 
-      return { jsonBody: { ok: true, created: created.length, updated: updated.length, skipped: skipped.length } };
-    } catch (e:any) {
+      return { jsonBody: { ok: true, created, updated, errors } };
+    } catch (e: any) {
       ctx.error(e);
       return { status: 500, jsonBody: { error: e.message } };
     }

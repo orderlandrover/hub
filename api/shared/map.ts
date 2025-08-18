@@ -1,4 +1,4 @@
-// Minimalt skelett: mappa Britpart-produkt → WooCommerce produktpayload
+// map.ts
 export type BritpartProduct = {
   partNumber: string;
   description: string;
@@ -9,7 +9,7 @@ export type BritpartProduct = {
   subcategoryIds?: string[];
 };
 
-export function toWCProduct(p: BritpartProduct, categoryMap: Record<string, number>) {
+export function toWCProduct(p: BritpartProduct, categoryId?: number) {
   return {
     sku: p.partNumber,
     name: p.description?.slice(0, 180) || p.partNumber,
@@ -17,10 +17,8 @@ export function toWCProduct(p: BritpartProduct, categoryMap: Record<string, numb
     regular_price: p.price != null ? String(p.price) : undefined,
     manage_stock: p.stockQty != null,
     stock_quantity: p.stockQty,
-    categories: (p.subcategoryIds || [])
-      .map((id) => categoryMap[id])
-      .filter(Boolean)
-      .map((id) => ({ id })),
-    images: (p.imageUrls || []).map((u) => ({ src: u })), // Börja med externa länkar
+    stock_status: typeof p.stockQty === "number" ? (p.stockQty > 0 ? "instock" : "outofstock") : undefined,
+    categories: categoryId ? [{ id: categoryId }] : undefined,
+    images: (p.imageUrls || []).map((u) => ({ src: u })),
   } as any;
 }

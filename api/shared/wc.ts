@@ -21,3 +21,9 @@ export async function wcRequest(path: string, init: RequestInit = {}) {
   }
   return res;
 }
+
+export async function getProductBySku(sku: string) {
+  const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
+  const arr = await r.json();
+  return (arr && arr[0]) || null;
+}
