@@ -5,8 +5,10 @@
     "moduleResolution": "Node",
     "esModuleInterop": true,
     "strict": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "skipLibCheck": true
   },
   "include": ["**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
+

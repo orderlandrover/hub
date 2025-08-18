@@ -8,9 +8,11 @@
     "build": "tsc -p ."
   },
   "dependencies": {
-    "@azure/functions": "^4.4.0"
+    "@azure/functions": "^4.4.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/node": "^24.3.0",
     "typescript": "^5.5.0"
   }
 }

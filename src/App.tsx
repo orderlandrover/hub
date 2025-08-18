@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/* ---------- Typer ---------- */
 type WCProduct = {
   id: number;
   name: string;
@@ -12,15 +13,10 @@ type WCProduct = {
   images?: { src: string }[];
 };
 
-type ListResponse = {
-  items: WCProduct[];
-  total: number;
-  pages: number;
-  page: number;
-};
-
+type ListResponse = { items: WCProduct[]; total: number; pages: number; page: number };
 type WCCategory = { id: number; name: string; parent: number };
 
+/* ---------- Tema ---------- */
 const brand = {
   yellow: "bg-amber-500 hover:bg-amber-600",
   yellowText: "text-amber-500",
@@ -28,7 +24,56 @@ const brand = {
   darkBtn: "bg-slate-900 hover:bg-slate-800",
 };
 
+/* ========================================================================
+   Huvudkomponent med två flikar
+======================================================================== */
 export default function App() {
+  const [tab, setTab] = useState<"products" | "import">("products");
+
+  const header = useMemo(
+    () => (
+      <header className={`${brand.dark} text-white sticky top-0 z-20 shadow`}>
+        <div className="w-full max-w-[1800px] mx-auto px-6 py-4 flex items-center justify-between">
+          <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">Britpart Integration Dashboard</h1>
+          <a href="https://landroverdelar.se" className="text-sm opacity-80 hover:opacity-100">Björklin Motor AB · landroverdelar.se</a>
+        </div>
+      </header>
+    ),
+    []
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      {header}
+
+      <main className="w-full max-w-[1800px] mx-auto px-6 py-6">
+        {/* Tabs */}
+        <div className="mb-6 flex gap-2">
+          <button
+            className={`px-4 py-2 rounded-xl border ${tab==="products" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"}`}
+            onClick={() => setTab("products")}
+          >
+            Produkter
+          </button>
+          <button
+            className={`px-4 py-2 rounded-xl border ${tab==="import" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"}`}
+            onClick={() => setTab("import")}
+          >
+            Import & synk
+          </button>
+        </div>
+
+        {tab === "products" ? <ProductsTab /> : <ImportTab />}
+      </main>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Flik 1: Produkter (listning, sortering, bulk, radering)
+   (Detta är vår senaste version du fick tidigare, lätt refaktorerad)
+======================================================================== */
+function ProductsTab() {
   // filters
   const [status, setStatus] = useState<string>("any");
   const [search, setSearch] = useState<string>("");
@@ -44,7 +89,6 @@ export default function App() {
   const [data, setData] = useState<ListResponse>({ items: [], total: 0, pages: 0, page: 1 });
   const [selected, setSelected] = useState<number[]>([]);
   const [cats, setCats] = useState<WCCategory[]>([]);
-
   const ctrlRef = useRef<AbortController | null>(null);
 
   const canPrev = page > 1;
@@ -88,7 +132,6 @@ export default function App() {
     }
   }
 
-  // fetch categories (alla sidor, flatas i API:t)
   async function loadCategories() {
     try {
       const res = await fetch("/api/wc-categories");
@@ -100,14 +143,8 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, orderby, order, perPage]);
-
-  useEffect(() => {
-    loadCategories();
-  }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, orderby, order, perPage]);
+  useEffect(() => { loadCategories(); }, []);
 
   function toggle(id: number) {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -173,201 +210,322 @@ export default function App() {
 
   function assignCategory() {
     if (selected.length === 0) return;
-    const val = prompt("Sätt kategori-id (WooCommerce):\n(Tips: använd rullistan ovan för att se id, eller bygg en bättre picker senare.)", "");
+    const val = prompt("Sätt kategori-id (WooCommerce):", "");
     const id = val ? Number(val) : 0;
     if (!id) return;
     bulkUpdate({ categoryId: id });
   }
 
-  const header = useMemo(
-    () => (
-      <header className={`${brand.dark} text-white sticky top-0 z-20 shadow`}>
-        <div className="w-full max-w-[1800px] mx-auto px-6 py-4 flex items-center justify-between">
-          <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">Britpart Integration Dashboard</h1>
-          <a href="https://landroverdelar.se" className="text-sm opacity-80 hover:opacity-100">Björklin Motor AB · landroverdelar.se</a>
+  return (
+    <>
+      {/* Filters */}
+      <section className="bg-white rounded-2xl shadow-sm border p-4 mb-6">
+        <div className="grid xl:grid-cols-12 gap-3 items-end">
+          <div className="xl:col-span-5">
+            <label className="block text-sm font-medium mb-1">Sök</label>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Namn eller SKU" className="w-full rounded-xl border px-3 py-2" />
+          </div>
+          <div className="xl:col-span-2">
+            <label className="block text-sm font-medium mb-1">Status</label>
+            <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-full rounded-xl border px-3 py-2">
+              <option value="any">Alla</option>
+              <option value="publish">Publicerad</option>
+              <option value="draft">Utkast</option>
+              <option value="pending">Pending</option>
+              <option value="private">Privat</option>
+            </select>
+          </div>
+          <div className="xl:col-span-3">
+            <label className="block text-sm font-medium mb-1">Kategori</label>
+            <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Alla</option>
+              {cats.map((c) => (<option key={c.id} value={String(c.id)}>{c.name} · #{c.id}</option>))}
+            </select>
+          </div>
+          <div className="xl:col-span-2 flex gap-2">
+            <button onClick={() => { setPage(1); /* single fetch */ load({ page: 1, search, category, orderby, order, per_page: perPage, status }); }} className={`px-4 py-2 rounded-xl text-white ${brand.darkBtn}`} disabled={loading}>
+              {loading ? "Hämtar…" : "Hämta produkter"}
+            </button>
+            <button onClick={() => { setSearch(""); setStatus("any"); setCategory(""); setPage(1); load({ page: 1, search: "", status: "any", category: "" }); }} className="px-4 py-2 rounded-xl border" disabled={loading}>
+              Rensa
+            </button>
+          </div>
+
+          <div className="xl:col-span-12 grid grid-cols-2 md:grid-cols-5 gap-3 pt-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm opacity-70">Sortera:</span>
+              <select value={orderby} onChange={(e) => setOrderby(e.target.value as any)} className="rounded-xl border px-2 py-1">
+                <option value="title">Titel</option>
+                <option value="price">Pris</option>
+                <option value="date">Datum</option>
+                <option value="id">ID</option>
+              </select>
+              <select value={order} onChange={(e) => setOrder(e.target.value as any)} className="rounded-xl border px-2 py-1">
+                <option value="asc">Stigande</option>
+                <option value="desc">Fallande</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm opacity-70">Per sida:</span>
+              <select value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }} className="rounded-xl border px-2 py-1">
+                {[25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            {err && <div className="col-span-full text-red-600 text-sm break-all">{err}</div>}
+          </div>
         </div>
-      </header>
-    ),
-    []
+      </section>
+
+      {/* Bulk actions */}
+      <section className="bg-white rounded-2xl shadow-sm border p-4 mb-4 flex flex-wrap items-center gap-3">
+        <button disabled={selected.length===0 || loading} onClick={() => bulkUpdate({ status: "publish" })} className={`px-4 py-2 rounded-xl text-white ${brand.yellow}`}>
+          Publicera
+        </button>
+        <button disabled={selected.length===0 || loading} onClick={() => bulkUpdate({ status: "draft" })} className="px-4 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white disabled:opacity-50">
+          Avpublicera
+        </button>
+        <button disabled={selected.length===0 || loading} onClick={askNewPrice} className="px-4 py-2 rounded-xl border">Nytt pris (SEK)</button>
+        <button disabled={selected.length===0 || loading} onClick={assignCategory} className="px-4 py-2 rounded-xl border">Sätt kategori</button>
+        <button disabled={selected.length===0 || loading} onClick={bulkDelete} className="ml-auto px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white disabled:opacity-50">
+          Radera
+        </button>
+        <span className="text-sm opacity-70">Valda: {selected.length}</span>
+      </section>
+
+      {/* Table */}
+      <section className="overflow-auto bg-white rounded-2xl shadow-sm border">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-100">
+            <tr className="[&>th]:p-3 [&>th]:text-left">
+              <th className="w-10"><input type="checkbox" onChange={toggleAllOnPage} checked={data.items.length > 0 && selected.length === data.items.length} /></th>
+              <th>Produkt</th><th>SKU</th><th>Pris</th><th>Lager</th><th>Status</th><th>Kategori</th><th>ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={8} className="p-6 text-center">Laddar…</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={8} className="p-6 text-center">Inga produkter</td></tr>}
+            {!loading && data.items.map((p) => (
+              <tr key={p.id} className="border-t align-middle">
+                <td className="p-3"><input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} /></td>
+                <td className="p-3 min-w-[320px]">
+                  <div className="flex items-center gap-3">
+                    {p.images?.[0]?.src && <img src={p.images[0].src} alt="" className="w-10 h-10 object-cover rounded-lg border" />}
+                    <span className="font-medium leading-tight">{p.name || "(namnlös)"}</span>
+                  </div>
+                </td>
+                <td className="p-3 font-mono">{p.sku || "—"}</td>
+                <td className="p-3">{p.regular_price ?? "—"}</td>
+                <td className="p-3">{p.stock_quantity ?? "—"} {p.stock_status && <span className="ml-1 opacity-60">({p.stock_status})</span>}</td>
+                <td className="p-3"><span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize">{p.status}</span></td>
+                <td className="p-3">{p.categories?.[0]?.id ? `#${p.categories[0].id}` : "—"}</td>
+                <td className="p-3">{p.id}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      {/* Pagination */}
+      <section className="mt-4 flex items-center justify-between">
+        <div className="text-sm opacity-70">Totalt: {data.total} · Sidor: {data.pages}</div>
+        <div className="flex gap-2">
+          <button disabled={!canPrev || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-3 py-2 rounded-xl border disabled:opacity-50">Föregående</button>
+          <span className="px-2 py-2">{data.page}</span>
+          <button disabled={!canNext || loading} onClick={() => setPage((p) => p + 1)} className="px-3 py-2 rounded-xl border disabled:opacity-50">Nästa</button>
+        </div>
+      </section>
+    </>
   );
+}
+
+/* ========================================================================
+   Flik 2: Import & synk (prisfil + snabbimport + dry-run/import-run)
+======================================================================== */
+function ImportTab() {
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [pub, setPub] = useState(true);
+
+  const [bpSubs, setBpSubs] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedSubs, setSelectedSubs] = useState<string[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/britpart-subcategories");
+        const j = await res.json();
+        setBpSubs(j.items || []);
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  function addLog(s: string) {
+    const stamp = new Date().toLocaleString();
+    setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 400));
+  }
+
+  async function handlePriceUpload(file: File) {
+    try {
+      setBusy(true);
+      addLog(`Laddar upp prisfil: ${file.name}`);
+      const buf = await file.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      const res = await fetch("/api/price-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, base64, publish: pub }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Fel vid prisimport");
+      addLog(`Prisimport klar: uppdaterade ${j.updated}, misslyckades ${j.failed}.`);
+    } catch (e: any) {
+      addLog(`Fel: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportOne(payload: { sku: string; name?: string; price?: string; stock?: number; categoryId?: number; status?: string; image?: string; }) {
+    try {
+      setBusy(true);
+      addLog(`Importerar produkt: ${payload.sku}`);
+      const res = await fetch("/api/import-one", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Fel vid import");
+      addLog(`OK: #${j.id} (${j.status})`);
+    } catch (e: any) {
+      addLog(`Fel: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function dryRun() {
+    try {
+      if (selectedSubs.length === 0) { alert("Välj minst en Britpart-underkategori"); return; }
+      setBusy(true);
+      addLog(`Dry-run: ${selectedSubs.length} underkategorier`);
+      const res = await fetch("/api/import-dry-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subcategoryIds: selectedSubs }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Dry-run misslyckades");
+      addLog(`Dry-run klart: create=${j?.summary?.create}, update=${j?.summary?.update}, skip=${j?.summary?.skip}`);
+    } catch (e: any) {
+      addLog(`Fel: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runImport() {
+    try {
+      if (selectedSubs.length === 0) { alert("Välj minst en Britpart-underkategori"); return; }
+      setBusy(true);
+      addLog(`Kör import (${pub ? "publish" : "draft"}) för ${selectedSubs.length} underkategorier`);
+      const res = await fetch("/api/import-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subcategoryIds: selectedSubs, publish: pub }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Import misslyckades");
+      addLog(`Import startad: jobId=${j.jobId}`);
+    } catch (e: any) {
+      addLog(`Fel: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* UI state för snabbimport */
+  const [sku, setSku] = useState("");
+  const [pname, setPname] = useState("");
+  const [pprice, setPprice] = useState("");
+  const [pstock, setPstock] = useState<number | "">("");
+  const [pcat, setPcat] = useState<number | "">("");
+  const [pstatus, setPstatus] = useState<"publish"|"draft">("publish");
+  const [pimg, setPimg] = useState("");
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {header}
+    <div className="grid lg:grid-cols-3 gap-6">
+      {/* A: Prisfil */}
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
+        <h2 className="text-lg font-semibold mb-1">Prisfil (Excel/CSV) → WooCommerce</h2>
+        <p className="text-sm opacity-70 mb-3">Format: <code>SKU, Pris, Lager, Status</code>. Filen skickas base64 och parsas server-side.</p>
+        <label className="block rounded-xl border px-4 py-6 text-center cursor-pointer hover:bg-slate-50">
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])} />
+          {busy ? "Bearbetar…" : "Välj fil…"}
+        </label>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} /> Publicera direkt (annars draft)
+        </label>
+      </section>
 
-      <main className="w-full max-w-[1800px] mx-auto px-6 py-6">
-        {/* Filters */}
-        <section className="bg-white rounded-2xl shadow-sm border p-4 mb-6">
-          <div className="grid xl:grid-cols-12 gap-3 items-end">
-            <div className="xl:col-span-5">
-              <label className="block text-sm font-medium mb-1">Sök</label>
+      {/* B: Snabbimport (en produkt) */}
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
+        <h2 className="text-lg font-semibold mb-1">Britpart snabbimport (1 produkt)</h2>
+        <p className="text-sm opacity-70 mb-3">Fyll i fälten nedan (SKU = Britpart part number). Använd detta för att test-importera en enstaka produkt.</p>
+        <div className="grid grid-cols-2 gap-2">
+          <input value={sku} onChange={(e)=>setSku(e.target.value)} placeholder="SKU (obligatorisk)" className="rounded-xl border px-3 py-2 col-span-2" />
+          <input value={pname} onChange={(e)=>setPname(e.target.value)} placeholder="Namn" className="rounded-xl border px-3 py-2 col-span-2" />
+          <input value={pprice} onChange={(e)=>setPprice(e.target.value)} placeholder="Pris (SEK)" className="rounded-xl border px-3 py-2" />
+          <input value={pstock as any} onChange={(e)=>setPstock(e.target.value ? Number(e.target.value) : "")} placeholder="Lager" className="rounded-xl border px-3 py-2" />
+          <input value={pcat as any} onChange={(e)=>setPcat(e.target.value ? Number(e.target.value) : "")} placeholder="Kategori ID" className="rounded-xl border px-3 py-2" />
+          <select value={pstatus} onChange={(e)=>setPstatus(e.target.value as any)} className="rounded-xl border px-3 py-2">
+            <option value="publish">Publicera</option>
+            <option value="draft">Utkast</option>
+          </select>
+          <input value={pimg} onChange={(e)=>setPimg(e.target.value)} placeholder="Bild-URL (valfritt)" className="rounded-xl border px-3 py-2 col-span-2" />
+        </div>
+        <button
+          disabled={!sku || busy}
+          onClick={() => handleImportOne({ sku, name: pname || undefined, price: pprice || undefined, stock: (pstock===""? undefined : Number(pstock)), categoryId: (pcat===""? undefined : Number(pcat)), status: pstatus, image: pimg || undefined })}
+          className={`mt-3 px-4 py-2 rounded-xl text-white ${brand.darkBtn} disabled:opacity-50`}
+        >
+          Importera nu
+        </button>
+      </section>
+
+      {/* C: Britpart underkategorier → dry-run / run */}
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
+        <h2 className="text-lg font-semibold mb-1">Britpart underkategorier</h2>
+        <p className="text-sm opacity-70 mb-3">Välj en eller flera underkategorier och kör dry-run eller verklig import.</p>
+        <div className="h-48 overflow-auto rounded-xl border p-2">
+          {bpSubs.map((s) => (
+            <label key={s.id} className="flex items-center gap-2 py-1">
               <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Namn eller SKU"
-                className="w-full rounded-xl border px-3 py-2"
+                type="checkbox"
+                className="accent-amber-600"
+                checked={selectedSubs.includes(s.id)}
+                onChange={() => setSelectedSubs((prev) => prev.includes(s.id) ? prev.filter(x=>x!==s.id) : [...prev, s.id])}
               />
-            </div>
-            <div className="xl:col-span-2">
-              <label className="block text-sm font-medium mb-1">Status</label>
-              <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-full rounded-xl border px-3 py-2">
-                <option value="any">Alla</option>
-                <option value="publish">Publicerad</option>
-                <option value="draft">Utkast</option>
-                <option value="pending">Pending</option>
-                <option value="private">Privat</option>
-              </select>
-            </div>
-            <div className="xl:col-span-3">
-              <label className="block text-sm font-medium mb-1">Kategori</label>
-              <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} className="w-full rounded-xl border px-3 py-2">
-                <option value="">Alla</option>
-                {cats.map((c) => (
-                  <option key={c.id} value={String(c.id)}>
-                    {c.name} · #{c.id}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="xl:col-span-2 flex gap-2">
-              <button
-                onClick={() => { setPage(1); load({ page: 1, search, category, orderby, order, per_page: perPage, status }); }}
-                className={`px-4 py-2 rounded-xl text-white ${brand.darkBtn}`}
-                disabled={loading}
-              >
-                {loading ? "Hämtar…" : "Hämta produkter"}
-              </button>
-              <button
-                onClick={() => { setSearch(""); setStatus("any"); setCategory(""); setPage(1); load({ page: 1, search: "", status: "any", category: "" }); }}
-                className="px-4 py-2 rounded-xl border"
-                disabled={loading}
-              >
-                Rensa
-              </button>
-            </div>
+              <span className="truncate">{s.name}</span>
+              <span className="ml-auto text-xs opacity-60">#{s.id}</span>
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <button disabled={busy} onClick={dryRun} className="px-4 py-2 rounded-xl border">Dry-run</button>
+          <button disabled={busy} onClick={runImport} className={`px-4 py-2 rounded-xl text-white ${brand.yellow}`}>Kör import</button>
+        </div>
+      </section>
 
-            <div className="xl:col-span-12 grid grid-cols-2 md:grid-cols-5 gap-3 pt-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm opacity-70">Sortera:</span>
-                <select value={orderby} onChange={(e) => setOrderby(e.target.value as any)} className="rounded-xl border px-2 py-1">
-                  <option value="title">Titel</option>
-                  <option value="price">Pris</option>
-                  <option value="date">Datum</option>
-                  <option value="id">ID</option>
-                </select>
-                <select value={order} onChange={(e) => setOrder(e.target.value as any)} className="rounded-xl border px-2 py-1">
-                  <option value="asc">Stigande</option>
-                  <option value="desc">Fallande</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm opacity-70">Per sida:</span>
-                <select value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }} className="rounded-xl border px-2 py-1">
-                  {[25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </div>
-              {err && <div className="col-span-full text-red-600 text-sm break-all">{err}</div>}
-            </div>
-          </div>
-        </section>
-
-        {/* Bulk actions */}
-        <section className="bg-white rounded-2xl shadow-sm border p-4 mb-4 flex flex-wrap items-center gap-3">
-          <button
-            disabled={selected.length===0 || loading}
-            onClick={() => bulkUpdate({ status: "publish" })}
-            className={`px-4 py-2 rounded-xl text-white ${brand.yellow}`}
-          >
-            Publicera
-          </button>
-          <button
-            disabled={selected.length===0 || loading}
-            onClick={() => bulkUpdate({ status: "draft" })}
-            className="px-4 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white disabled:opacity-50"
-          >
-            Avpublicera
-          </button>
-
-          <button disabled={selected.length===0 || loading} onClick={askNewPrice} className="px-4 py-2 rounded-xl border">
-            Nytt pris (SEK)
-          </button>
-          <button disabled={selected.length===0 || loading} onClick={assignCategory} className="px-4 py-2 rounded-xl border">
-            Sätt kategori
-          </button>
-
-          <button
-            disabled={selected.length===0 || loading}
-            onClick={bulkDelete}
-            className="ml-auto px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-          >
-            Radera
-          </button>
-
-          <span className="text-sm opacity-70">Valda: {selected.length}</span>
-        </section>
-
-        {/* Table */}
-        <section className="overflow-auto bg-white rounded-2xl shadow-sm border">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-100">
-              <tr className="[&>th]:p-3 [&>th]:text-left">
-                <th className="w-10">
-                  <input type="checkbox" onChange={toggleAllOnPage} checked={data.items.length > 0 && selected.length === data.items.length} />
-                </th>
-                <th>Produkt</th>
-                <th>SKU</th>
-                <th>Pris</th>
-                <th>Lager</th>
-                <th>Status</th>
-                <th>Kategori</th>
-                <th>ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && <tr><td colSpan={8} className="p-6 text-center">Laddar…</td></tr>}
-              {!loading && data.items.length === 0 && <tr><td colSpan={8} className="p-6 text-center">Inga produkter</td></tr>}
-
-              {!loading && data.items.map((p) => (
-                <tr key={p.id} className="border-t align-middle">
-                  <td className="p-3">
-                    <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
-                  </td>
-                  <td className="p-3 min-w-[320px]">
-                    <div className="flex items-center gap-3">
-                      {p.images?.[0]?.src && <img src={p.images[0].src} alt="" className="w-10 h-10 object-cover rounded-lg border" />}
-                      <span className="font-medium leading-tight">{p.name || "(namnlös)"}</span>
-                    </div>
-                  </td>
-                  <td className="p-3 font-mono">{p.sku || "—"}</td>
-                  <td className="p-3">{p.regular_price ?? "—"}</td>
-                  <td className="p-3">{p.stock_quantity ?? "—"} {p.stock_status && <span className="ml-1 opacity-60">({p.stock_status})</span>}</td>
-                  <td className="p-3">
-                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize">
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="p-3">
-                    {p.categories?.[0]?.id ? `#${p.categories[0].id}` : "—"}
-                  </td>
-                  <td className="p-3">{p.id}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-
-        {/* Pagination */}
-        <section className="mt-4 flex items-center justify-between">
-          <div className="text-sm opacity-70">Totalt: {data.total} · Sidor: {data.pages}</div>
-          <div className="flex gap-2">
-            <button disabled={!canPrev || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-3 py-2 rounded-xl border disabled:opacity-50">Föregående</button>
-            <span className="px-2 py-2">{data.page}</span>
-            <button disabled={!canNext || loading} onClick={() => setPage((p) => p + 1)} className="px-3 py-2 rounded-xl border disabled:opacity-50">Nästa</button>
-          </div>
-        </section>
-
-        <footer className="text-xs opacity-60 mt-10">© {new Date().getFullYear()} Björklin Motor AB · Admin (SWA)</footer>
-      </main>
+      {/* D: Logg */}
+      <section className="lg:col-span-3 bg-white rounded-2xl shadow-sm border p-5">
+        <h2 className="text-lg font-semibold mb-2">Logg</h2>
+        <div className="h-64 overflow-auto rounded-xl border bg-slate-50 p-3 text-sm font-mono leading-relaxed">
+          {log.length===0 ? <div className="text-slate-400">Inga händelser ännu.</div> : (
+            <ul className="space-y-1">{log.map((l,i)=><li key={i}>{l}</li>)}</ul>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
