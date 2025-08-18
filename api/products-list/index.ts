@@ -9,14 +9,17 @@ app.http("products-list", {
     try {
       assertEnv();
       const url = new URL(req.url);
+
       const page = url.searchParams.get("page") || "1";
-      const status = url.searchParams.get("status") || "any";
+      const status = url.searchParams.get("status") || ""; // tom = alla
       const search = url.searchParams.get("search") || "";
       const category = url.searchParams.get("category") || "";
       const orderby = url.searchParams.get("orderby") || "title";
       const order = url.searchParams.get("order") || "asc";
+      const per_page = url.searchParams.get("per_page") || "100";
 
-      const qs = new URLSearchParams({ per_page: "100", page, status, orderby, order });
+      const qs = new URLSearchParams({ per_page, page, order, orderby });
+      if (status && status !== "any") qs.set("status", status);
       if (search) qs.set("search", search);
       if (category) qs.set("category", category);
 
