@@ -56,17 +56,13 @@ export default function App() {
         {/* Tabs */}
         <div className="mb-6 flex gap-2">
           <button
-            className={`px-4 py-2 rounded-lg border font-semibold ${
-              tab === "products" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"
-            }`}
+            className="px-4 py-2 rounded-lg ui-btn"
             onClick={() => setTab("products")}
           >
             Produkter
           </button>
           <button
-            className={`px-4 py-2 rounded-lg border font-semibold ${
-              tab === "import" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"
-            }`}
+            className="px-4 py-2 rounded-lg ui-btn"
             onClick={() => setTab("import")}
           >
             Import & synk
@@ -395,7 +391,7 @@ function ProductsTab() {
         <button
           disabled={selected.length === 0 || loading}
           onClick={assignCategory}
-          className={`px-4 py-2 rounded-lg ${brand.btn.secondary} disabled:opacity-50`}
+          className="px-4 py-2 rounded-lg ui-btn"
         >
           Sätt kategori
         </button>
