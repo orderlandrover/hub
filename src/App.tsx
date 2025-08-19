@@ -21,10 +21,10 @@ const brand = {
   card: "bg-white rounded-2xl shadow-sm border",
   chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
   btn: {
-    primary: "bg-slate-900 text-white hover:bg-slate-800",
-    secondary: "bg-white text-slate-900 border hover:bg-slate-50",
-    accent: "bg-amber-500 text-black hover:bg-amber-600",
-    danger: "bg-red-600 text-white hover:bg-red-700",
+    primary:  "bg-[#d4af37] text-[#fffc] hover:brightness-95 focus:ring-2 focus:ring-white/20",
+    secondary:"bg-[#d4af37] text-[#fffc] hover:brightness-95",
+    accent:   "bg-[#d4af37] text-[#fffc] hover:brightness-95",
+    danger:   "bg-[#d4af37] text-[#fffc] hover:brightness-95" // (om du vill behålla röd "Radera", byt till bg-red-600 text-white)
   },
 };
 
@@ -34,7 +34,7 @@ export default function App() {
 
   const header = useMemo(
     () => (
-      <header className="bg-slate-900 text-white sticky top-0 z-20 shadow">
+      <header className={`bg-[#232425] text-[#fffc] sticky top-0 z-20 shadow`}>
         <div className="w-full px-6 py-4 flex items-center justify-between">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
             Britpart Integration Dashboard
