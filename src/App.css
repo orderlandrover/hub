@@ -1,42 +1,68 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+/* ============================
+   Brand theme overrides
+   ============================ */
+
+/* 1) Färger du kan ändra fritt */
+:root{
+  --brand-header-bg: #232425;  /* Header bakgrund */
+  --brand-text:      #fffc;    /* Textfärg (header + knappar) */
+  --brand-btn-bg:    #d4af37;  /* Knappar bakgrund (guld) */
+  --brand-btn-bg-h:  #c39a2f;  /* Knappar hover (mörkare guld) */
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+/* 2) Ta bort Vite-demo layoutbegränsningarna */
+#root{
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  text-align: initial;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+/* 3) Header – tvinga bakgrund och textfärg */
+header{
+  background: var(--brand-header-bg) !important;
+  color: var(--brand-text) !important;
+}
+header *{
+  color: var(--brand-text) !important;
+}
+header a{
+  opacity: .9;
+}
+header a:hover{
+  opacity: 1;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+/* 4) Knappar – färgsätt ALLA knappar konsekvent
+      (override: Tailwind-klasser som bg-.../text-... ersätts) */
+button{
+  background: var(--brand-btn-bg) !important;
+  color: var(--brand-text) !important;
+  border: 1px solid transparent !important;
+  transition: background-color .15s ease;
+}
+button:hover{
+  background: var(--brand-btn-bg-h) !important;
+}
+button:disabled{
+  opacity: .55 !important;
+  cursor: not-allowed !important;
+  filter: grayscale(.1);
 }
 
-.card {
-  padding: 2em;
+/* 5) “Chip”-liknande status-badges får bra kontrast på ljus bakgrund */
+.badge,
+span.inline-flex.rounded-full{
+  border-color: rgba(0,0,0,.12) !important;
+  background: #f6f7f9 !important;
+  color: #333 !important;
 }
 
-.read-the-docs {
-  color: #888;
+/* 6) Cards/tables behåller ljus look (om du vill tona ner ytterligare) */
+section, .card, table{
+  background: #fff;
 }
+
+/* 7) Du kan snabbt prova andra färger i konsolen, t.ex:
+   document.documentElement.style.setProperty('--brand-btn-bg','#eab308')
+*/

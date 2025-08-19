@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
+// Lägger på ditt tema / dina färger
+import "./brand.css";           // <-- eller "./App.css" om du använde den filen
 /* ---------- Typer ---------- */
 type WCProduct = {
   id: number;
