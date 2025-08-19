@@ -36,7 +36,7 @@ export default function App() {
 
   const header = useMemo(
     () => (
-      <header className="bm-header sticky top-0 z-20 shadow">
+      <header className="ui-header sticky top-0 z-20 shadow">
         <div className="w-full px-6 py-4 flex items-center justify-between">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">Britpart Integration Dashboard</h1>
           <a href="https://landroverdelar.se" className="text-sm opacity-80 hover:opacity-100" rel="noreferrer">
@@ -313,7 +313,7 @@ function ProductsTab() {
                 setPage(1);
                 load({ page: 1, search, category, orderby, order, per_page: perPage, status });
               }}
-              className={`px-4 py-2 rounded-lg ${brand.btn.primary}`}
+              className="px-4 py-2 rounded-lg ui-btn"
               disabled={loading}
             >
               {loading ? "Hämtar…" : "Hämta produkter"}
@@ -326,7 +326,7 @@ function ProductsTab() {
                 setPage(1);
                 load({ page: 1, search: "", status: "any", category: "" });
               }}
-              className={`px-4 py-2 rounded-lg ${brand.btn.secondary}`}
+              className="px-4 py-2 rounded-lg ui-btn"
               disabled={loading}
             >
               Rensa
@@ -374,21 +374,21 @@ function ProductsTab() {
         <button
           disabled={selected.length === 0 || loading}
           onClick={() => bulkUpdate({ status: "publish" })}
-          className={`px-4 py-2 rounded-lg ${brand.btn.accent} disabled:opacity-50`}
+          className="px-4 py-2 rounded-lg ui-btn"
         >
           Publicera
         </button>
         <button
           disabled={selected.length === 0 || loading}
           onClick={() => bulkUpdate({ status: "draft" })}
-          className={`px-4 py-2 rounded-lg ${brand.btn.secondary} disabled:opacity-50`}
+          className="px-4 py-2 rounded-lg ui-btn"
         >
           Avpublicera
         </button>
         <button
           disabled={selected.length === 0 || loading}
           onClick={askNewPrice}
-          className={`px-4 py-2 rounded-lg ${brand.btn.secondary} disabled:opacity-50`}
+          className="px-4 py-2 rounded-lg ui-btn"
         >
           Nytt pris (SEK)
         </button>
@@ -402,7 +402,7 @@ function ProductsTab() {
         <button
           disabled={selected.length === 0 || loading}
           onClick={bulkDelete}
-          className={`ml-auto px-4 py-2 rounded-lg ${brand.btn.danger} disabled:opacity-50`}
+          className="ml-auto px-4 py-2 rounded-lg ui-btn ui-btn--danger"
         >
           Radera
         </button>
