@@ -1,34 +1,28 @@
-/* ===== Brand theme ===== */
+/* src/brand.css  */
 :root{
-  --brand-header: #232425;
-  --brand-gold:   #d4af37;
-  --brand-text:   #fffc;   /* nästan vit */
+  --ui-header-bg:#232425;
+  --ui-on-dark:#fffc;     /* nästan vitt */
+  --ui-btn-bg:#d4af37;    /* guld */
+  --ui-btn-text:#fffc;
+  --ui-btn-danger:#e11d48;
 }
 
 /* Header */
-.brand-header{
-  background: var(--brand-header) !important;
-  color: var(--brand-text) !important;
-}
-.brand-header a{
-  color: var(--brand-text) !important;
-  opacity: .9;
-}
-.brand-header a:hover{ opacity: 1; }
-
-/* Knappar – gör alla knappar guld med vit text */
-.theme-brand button{
-  background: var(--brand-gold) !important;
-  color: var(--brand-text) !important;
-  border-color: color-mix(in srgb, var(--brand-gold), #000 20%) !important;
-}
-.theme-brand button:hover{
-  filter: brightness(.95);
+.ui-header{
+  background:var(--ui-header-bg) !important;
+  color:var(--ui-on-dark) !important;
 }
 
-/* Valfria chip/label-badges om du har dem */
-.theme-brand .chip{
-  background: color-mix(in srgb, var(--brand-gold), #000 85%);
-  color: var(--brand-text);
-  border-color: color-mix(in srgb, var(--brand-gold), #000 70%);
+/* Knapp-bas (gäller alla knappar du märker med .ui-btn) */
+.ui-btn{
+  background:var(--ui-btn-bg) !important;
+  color:var(--ui-btn-text) !important;
+  border:1px solid rgba(0,0,0,.15);
+}
+.ui-btn:hover{ filter:brightness(.95); }
+
+/* Radera-knappen */
+.ui-btn--danger{
+  background:var(--ui-btn-danger) !important;
+  color:#fff !important;
 }
