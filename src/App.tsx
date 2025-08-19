@@ -194,35 +194,38 @@ function ProductsTab() {
 
   // *** FIX: robust radering + tydlig dialog ***
   async function bulkDelete() {
-    if (selected.length === 0 || loading) return;
-    if (!confirm(`Radera ${selected.length} produkt(er) permanent i WooCommerce?`)) return;
+  if (selected.length === 0 || loading) return;
+  if (!confirm(`Radera ${selected.length} produkt(er) permanent i WooCommerce?`)) return;
 
-    setLoading(true);
-    setErr("");
-    try {
-      const res = await fetch("/api/products-delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selected }),
-      });
+  setLoading(true);
+  setErr("");
+  try {
+    const res = await fetch("/api/products-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: selected }),
+    });
 
-      const text = await res.text();
-      const j = text ? JSON.parse(text) : {};
-      if (!res.ok) throw new Error(j?.error || text || "Kunde inte radera");
-
-      // valfritt: visa summering
-      const msg = `Raderade: ${j?.deleted ?? "?"}${(j?.failed?.length ? `, misslyckades: ${j.failed.length}` : "")}`;
-      console.log("Delete:", j);
-      alert(msg);
-
-      setSelected([]);
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Kunde inte radera");
-    } finally {
-      setLoading(false);
+    // Tål tom body (t.ex. 204) eller 200 med/utan JSON
+    const text = await res.text();
+    let payload: any = null;
+    if (text) {
+      try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
     }
+
+    if (!res.ok) {
+      const msg = payload?.error || text || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+
+    setSelected([]);
+    await load();
+  } catch (e: any) {
+    setErr(e?.message || "Kunde inte radera");
+  } finally {
+    setLoading(false);
   }
+}
 
   function askNewPrice() {
     if (selected.length === 0) return;

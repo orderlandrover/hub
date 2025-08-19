@@ -1,42 +1,65 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+// api/products-delete/index.ts
+import {
+  app,
+  HttpRequest,
+  HttpResponseInit,
+  InvocationContext,
+} from "@azure/functions";
 import { assertEnv } from "../shared/env";
 import { wcRequest } from "../shared/wc";
 
 app.http("products-delete", {
   methods: ["POST"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (
+    req: HttpRequest,
+    ctx: InvocationContext
+  ): Promise<HttpResponseInit> => {
     try {
       assertEnv();
 
-      // Säkert body-parsning
-      let body: any = null;
-      try { body = await req.json(); } catch { body = null; }
-
+      // Tål tom body / felaktigt JSON
+      const bodyText = await req.text();
+      const body = bodyText ? (JSON.parse(bodyText) as any) : {};
       const ids: number[] = Array.isArray(body?.ids)
-        ? body.ids.map((n: any) => Number(n)).filter((n: any) => Number.isFinite(n) && n > 0)
+        ? body.ids.map((n: any) => Number(n)).filter(Boolean)
         : [];
 
       if (ids.length === 0) {
-        return { status: 400, jsonBody: { error: "ids required (number[])" } };
+        return { status: 400, jsonBody: { error: "ids required" } };
       }
 
-      // Kör DELETE mot WooCommerce med force=true
-      const results = await Promise.allSettled(
-        ids.map((id) =>
-          wcRequest(`/products/${id}?force=true`, { method: "DELETE" }).then((r) => r.json())
-        )
-      );
+      const deleted: any[] = [];
+      const errors: { id: number; error: string }[] = [];
 
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      const errors = results
-        .map((r, i) => (r.status === "rejected" ? { id: ids[i], error: (r as PromiseRejectedResult).reason?.message ?? "unknown" } : null))
-        .filter(Boolean);
+      // Kör en-och-en med force=true (annars blir det trash i WP)
+      for (const id of ids) {
+        try {
+          const res = await wcRequest(`/products/${id}?force=true`, {
+            method: "DELETE",
+          });
 
-      return { jsonBody: { ok: true, deleted: ok, failed: errors } };
+          // WP kan svara 200 med JSON, eller 204 utan body. Tål båda.
+          let payload: any = null;
+          const text = await res.text();
+          if (text) {
+            try {
+              payload = JSON.parse(text);
+            } catch {
+              payload = { raw: text };
+            }
+          }
+          deleted.push({ id, payload });
+        } catch (e: any) {
+          errors.push({ id, error: e?.message || String(e) });
+          ctx.error(`Delete ${id} failed: ${e?.message || e}`);
+        }
+      }
+
+      return { jsonBody: { ok: true, deleted, errors } };
     } catch (e: any) {
       ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message } };
+      return { status: 500, jsonBody: { error: e?.message || String(e) } };
     }
   },
 });
