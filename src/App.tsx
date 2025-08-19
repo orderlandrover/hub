@@ -16,41 +16,28 @@ type WCProduct = {
 type ListResponse = { items: WCProduct[]; total: number; pages: number; page: number };
 type WCCategory = { id: number; name: string; parent: number };
 
-/* ---------- Tema ---------- */
+/* ---------- Tema (hög kontrast) ---------- */
 const brand = {
-  yellow: "bg-amber-500 hover:bg-amber-600",
-  yellowText: "text-amber-500",
-  dark: "bg-slate-900",
-  darkBtn: "bg-slate-900 hover:bg-slate-800",
+  headerBg: "bg-slate-900",
+  headerText: "text-white",
+  // primär (gul) med mörk text för max kontrast
+  primary: "bg-amber-500 text-slate-900 hover:bg-amber-400",
+  // sekundär (mörk) med vit text
+  secondary: "bg-slate-800 text-white hover:bg-slate-700",
+  // destruktiv
+  danger: "bg-red-600 text-white hover:bg-red-700",
+  // kant/ytor
+  card: "bg-white rounded-2xl shadow-sm border",
+  chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
 };
 
-/* ---------- Hjälpare för API ---------- */
-async function apiFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  // Läs alltid som text först, så vi klarar 204/empty body utan att kasta i .json()
-  const text = await res.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-  if (!res.ok) {
-    const msg = data?.error || text || `${res.status} ${res.statusText}`;
-    throw new Error(msg);
-  }
-  return data as T;
-}
-
-/* ========================================================================
-   Huvudkomponent med två flikar
-======================================================================== */
+/* ===================================================================== */
 export default function App() {
   const [tab, setTab] = useState<"products" | "import">("products");
 
   const header = useMemo(
     () => (
-      <header className={`${brand.dark} text-white sticky top-0 z-20 shadow`}>
+      <header className={`${brand.headerBg} ${brand.headerText} sticky top-0 z-20 shadow`}>
         <div className="w-full mx-auto px-6 py-4 flex items-center justify-between">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
             Britpart Integration Dashboard
@@ -58,6 +45,7 @@ export default function App() {
           <a
             href="https://landroverdelar.se"
             className="text-sm opacity-80 hover:opacity-100"
+            rel="noreferrer"
           >
             Björklin Motor AB · landroverdelar.se
           </a>
@@ -71,12 +59,12 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       {header}
 
-      {/* Helbreddslayout (ingen max-width) */}
+      {/* Full bredd – ingen max-width */}
       <main className="w-full px-6 py-6">
         {/* Tabs */}
         <div className="mb-6 flex gap-2">
           <button
-            className={`px-4 py-2 rounded-xl border ${
+            className={`px-4 py-2 rounded-lg border font-semibold ${
               tab === "products" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"
             }`}
             onClick={() => setTab("products")}
@@ -84,7 +72,7 @@ export default function App() {
             Produkter
           </button>
           <button
-            className={`px-4 py-2 rounded-xl border ${
+            className={`px-4 py-2 rounded-lg border font-semibold ${
               tab === "import" ? "bg-white shadow" : "bg-slate-100 hover:bg-white"
             }`}
             onClick={() => setTab("import")}
@@ -99,9 +87,9 @@ export default function App() {
   );
 }
 
-/* ========================================================================
-   Flik 1: Produkter (listning, sortering, bulk, radering)
-======================================================================== */
+/* =====================================================================
+   Flik 1 – Produkter
+===================================================================== */
 function ProductsTab() {
   // filters
   const [status, setStatus] = useState<string>("any");
@@ -123,17 +111,7 @@ function ProductsTab() {
   const canPrev = page > 1;
   const canNext = page < (data.pages || 1);
 
-  async function load(
-    over?: Partial<{
-      page: number;
-      status: string;
-      search: string;
-      category: string;
-      orderby: string;
-      order: string;
-      per_page: number;
-    }>
-  ) {
+  async function load(over?: Partial<{ page: number; status: string; search: string; category: string; orderby: string; order: string; per_page: number }>) {
     const p = over?.page ?? page;
     const st = over?.status ?? status;
     const se = (over?.search ?? search).trim();
@@ -159,7 +137,9 @@ function ProductsTab() {
       if (se) q.set("search", se);
       if (cat) q.set("category", cat);
 
-      const json = await apiFetch<ListResponse>(`/api/products-list?${q.toString()}`);
+      const res = await fetch(`/api/products-list?${q.toString()}`, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(await res.text());
+      const json = (await res.json()) as ListResponse;
       setData(json);
       setSelected([]);
     } catch (e: any) {
@@ -171,43 +151,38 @@ function ProductsTab() {
 
   async function loadCategories() {
     try {
-      const json = await apiFetch<{ items: WCCategory[] }>("/api/wc-categories");
+      const res = await fetch("/api/wc-categories");
+      if (!res.ok) throw new Error(await res.text());
+      const json = (await res.json()) as { items: WCCategory[] };
       setCats(json.items || []);
     } catch (e: any) {
       console.error(e);
     }
   }
 
-  useEffect(() => {
-    load(); // första laddning + när pag/sort ändras
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, orderby, order, perPage]);
-
-  useEffect(() => {
-    loadCategories();
-  }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, orderby, order, perPage]);
+  useEffect(() => { loadCategories(); }, []);
 
   function toggle(id: number) {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   }
   function toggleAllOnPage() {
-    setSelected((s) =>
-      s.length === data.items.length && data.items.length > 0 ? [] : data.items.map((p) => p.id)
-    );
+    setSelected((s) => (s.length === data.items.length && data.items.length > 0 ? [] : data.items.map((p) => p.id)));
   }
 
-  async function bulkUpdate(
-    payload: Partial<{ status: WCProduct["status"]; price: string; stock_quantity: number; categoryId: number }>
-  ) {
+  async function bulkUpdate(payload: Partial<{ status: WCProduct["status"]; price: string; stock_quantity: number; categoryId: number }>) {
     if (selected.length === 0 || loading) return;
     setLoading(true);
     setErr("");
     try {
-      await apiFetch("/api/products-update", {
+      const res = await fetch("/api/products-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: selected, ...payload }),
       });
+      const text = await res.text();
+      const j = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(j?.error || text || "Kunde inte uppdatera");
       setSelected([]);
       await load();
     } catch (e: any) {
@@ -217,18 +192,29 @@ function ProductsTab() {
     }
   }
 
+  // *** FIX: robust radering + tydlig dialog ***
   async function bulkDelete() {
     if (selected.length === 0 || loading) return;
     if (!confirm(`Radera ${selected.length} produkt(er) permanent i WooCommerce?`)) return;
+
     setLoading(true);
     setErr("");
     try {
-      // TÅL 204/empty body
-      await apiFetch("/api/products-delete", {
+      const res = await fetch("/api/products-delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: selected }),
       });
+
+      const text = await res.text();
+      const j = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(j?.error || text || "Kunde inte radera");
+
+      // valfritt: visa summering
+      const msg = `Raderade: ${j?.deleted ?? "?"}${(j?.failed?.length ? `, misslyckades: ${j.failed.length}` : "")}`;
+      console.log("Delete:", j);
+      alert(msg);
+
       setSelected([]);
       await load();
     } catch (e: any) {
@@ -261,27 +247,23 @@ function ProductsTab() {
   return (
     <>
       {/* Filters */}
-      <section className="bg-white rounded-2xl shadow-sm border p-4 mb-6">
+      <section className={`${brand.card} p-4 mb-6`}>
         <div className="grid xl:grid-cols-12 gap-3 items-end">
           <div className="xl:col-span-5">
             <label className="block text-sm font-medium mb-1">Sök</label>
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (setPage(1), load({ page: 1, search }))}
               placeholder="Namn eller SKU"
-              className="w-full rounded-xl border px-3 py-2"
+              className="w-full rounded-lg border px-3 py-2"
             />
           </div>
           <div className="xl:col-span-2">
             <label className="block text-sm font-medium mb-1">Status</label>
             <select
               value={status}
-              onChange={(e) => {
-                setStatus(e.target.value);
-                setPage(1);
-              }}
-              className="w-full rounded-xl border px-3 py-2"
+              onChange={(e) => { setStatus(e.target.value); setPage(1); }}
+              className="w-full rounded-lg border px-3 py-2"
             >
               <option value="any">Alla</option>
               <option value="publish">Publicerad</option>
@@ -294,48 +276,24 @@ function ProductsTab() {
             <label className="block text-sm font-medium mb-1">Kategori</label>
             <select
               value={category}
-              onChange={(e) => {
-                setCategory(e.target.value);
-                setPage(1);
-              }}
-              className="w-full rounded-xl border px-3 py-2"
+              onChange={(e) => { setCategory(e.target.value); setPage(1); }}
+              className="w-full rounded-lg border px-3 py-2"
             >
               <option value="">Alla</option>
-              {cats.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name} · #{c.id}
-                </option>
-              ))}
+              {cats.map((c) => (<option key={c.id} value={String(c.id)}>{c.name} · #{c.id}</option>))}
             </select>
           </div>
           <div className="xl:col-span-2 flex gap-2">
             <button
-              onClick={() =>
-                (setPage(1),
-                load({
-                  page: 1,
-                  search,
-                  category,
-                  orderby,
-                  order,
-                  per_page: perPage,
-                  status,
-                }))
-              }
-              className={`px-4 py-2 rounded-xl text-white ${brand.darkBtn}`}
+              onClick={() => { setPage(1); load({ page: 1, search, category, orderby, order, per_page: perPage, status }); }}
+              className={`px-4 py-2 rounded-lg font-semibold ${brand.secondary}`}
               disabled={loading}
             >
               {loading ? "Hämtar…" : "Hämta produkter"}
             </button>
             <button
-              onClick={() => {
-                setSearch("");
-                setStatus("any");
-                setCategory("");
-                setPage(1);
-                load({ page: 1, search: "", status: "any", category: "" });
-              }}
-              className="px-4 py-2 rounded-xl border"
+              onClick={() => { setSearch(""); setStatus("any"); setCategory(""); setPage(1); load({ page: 1, search: "", status: "any", category: "" }); }}
+              className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50"
               disabled={loading}
             >
               Rensa
@@ -345,40 +303,21 @@ function ProductsTab() {
           <div className="xl:col-span-12 grid grid-cols-2 md:grid-cols-5 gap-3 pt-2">
             <div className="flex items-center gap-2">
               <span className="text-sm opacity-70">Sortera:</span>
-              <select
-                value={orderby}
-                onChange={(e) => setOrderby(e.target.value as any)}
-                className="rounded-xl border px-2 py-1"
-              >
+              <select value={orderby} onChange={(e) => setOrderby(e.target.value as any)} className="rounded-lg border px-2 py-1">
                 <option value="title">Titel</option>
                 <option value="price">Pris</option>
                 <option value="date">Datum</option>
                 <option value="id">ID</option>
               </select>
-              <select
-                value={order}
-                onChange={(e) => setOrder(e.target.value as any)}
-                className="rounded-xl border px-2 py-1"
-              >
+              <select value={order} onChange={(e) => setOrder(e.target.value as any)} className="rounded-lg border px-2 py-1">
                 <option value="asc">Stigande</option>
                 <option value="desc">Fallande</option>
               </select>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm opacity-70">Per sida:</span>
-              <select
-                value={perPage}
-                onChange={(e) => {
-                  setPerPage(Number(e.target.value));
-                  setPage(1);
-                }}
-                className="rounded-xl border px-2 py-1"
-              >
-                {[25, 50, 100].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
+              <select value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }} className="rounded-lg border px-2 py-1">
+                {[25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
             {err && <div className="col-span-full text-red-600 text-sm break-all">{err}</div>}
@@ -387,39 +326,39 @@ function ProductsTab() {
       </section>
 
       {/* Bulk actions */}
-      <section className="bg-white rounded-2xl shadow-sm border p-4 mb-4 flex flex-wrap items-center gap-3">
+      <section className={`${brand.card} p-4 mb-4 flex flex-wrap items-center gap-3`}>
         <button
-          disabled={selected.length === 0 || loading}
+          disabled={selected.length===0 || loading}
           onClick={() => bulkUpdate({ status: "publish" })}
-          className={`px-4 py-2 rounded-xl text-white ${brand.yellow}`}
+          className={`px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.primary}`}
         >
           Publicera
         </button>
         <button
-          disabled={selected.length === 0 || loading}
+          disabled={selected.length===0 || loading}
           onClick={() => bulkUpdate({ status: "draft" })}
-          className="px-4 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white disabled:opacity-50"
+          className={`px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.secondary}`}
         >
           Avpublicera
         </button>
         <button
-          disabled={selected.length === 0 || loading}
+          disabled={selected.length===0 || loading}
           onClick={askNewPrice}
-          className="px-4 py-2 rounded-xl border"
+          className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50 disabled:opacity-50"
         >
           Nytt pris (SEK)
         </button>
         <button
-          disabled={selected.length === 0 || loading}
+          disabled={selected.length===0 || loading}
           onClick={assignCategory}
-          className="px-4 py-2 rounded-xl border"
+          className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50 disabled:opacity-50"
         >
           Sätt kategori
         </button>
         <button
-          disabled={selected.length === 0 || loading}
+          disabled={selected.length===0 || loading}
           onClick={bulkDelete}
-          className="ml-auto px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+          className={`ml-auto px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.danger}`}
         >
           Radera
         </button>
@@ -427,136 +366,70 @@ function ProductsTab() {
       </section>
 
       {/* Table */}
-      <section className="overflow-auto bg-white rounded-2xl shadow-sm border">
+      <section className={`${brand.card} overflow-auto`}>
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100">
             <tr className="[&>th]:p-3 [&>th]:text-left">
               <th className="w-10">
-                <input
-                  type="checkbox"
-                  onChange={toggleAllOnPage}
-                  checked={data.items.length > 0 && selected.length === data.items.length}
-                />
+                <input type="checkbox" onChange={toggleAllOnPage} checked={data.items.length > 0 && selected.length === data.items.length} />
               </th>
-              <th>Produkt</th>
-              <th>SKU</th>
-              <th>Pris</th>
-              <th>Lager</th>
-              <th>Status</th>
-              <th>Kategori</th>
-              <th>ID</th>
+              <th>Produkt</th><th>SKU</th><th>Pris</th><th>Lager</th><th>Status</th><th>Kategori</th><th>ID</th>
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={8} className="p-6 text-center">
-                  Laddar…
+            {loading && <tr><td colSpan={8} className="p-6 text-center">Laddar…</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={8} className="p-6 text-center">Inga produkter</td></tr>}
+            {!loading && data.items.map((p) => (
+              <tr key={p.id} className="border-t align-middle">
+                <td className="p-3"><input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} /></td>
+                <td className="p-3 min-w-[320px]">
+                  <div className="flex items-center gap-3">
+                    {p.images?.[0]?.src && <img src={p.images[0].src} alt="" className="w-10 h-10 object-cover rounded-lg border" />}
+                    <span className="font-medium leading-tight">{p.name || "(namnlös)"}</span>
+                  </div>
                 </td>
+                <td className="p-3 font-mono">{p.sku || "—"}</td>
+                <td className="p-3">{p.regular_price ?? "—"}</td>
+                <td className="p-3">{p.stock_quantity ?? "—"} {p.stock_status && <span className="ml-1 opacity-60">({p.stock_status})</span>}</td>
+                <td className="p-3"><span className={brand.chip}>{p.status}</span></td>
+                <td className="p-3">{p.categories?.[0]?.id ? `#${p.categories[0].id}` : "—"}</td>
+                <td className="p-3">{p.id}</td>
               </tr>
-            )}
-            {!loading && data.items.length === 0 && (
-              <tr>
-                <td colSpan={8} className="p-6 text-center">
-                  Inga produkter
-                </td>
-              </tr>
-            )}
-            {!loading &&
-              data.items.map((p) => (
-                <tr key={p.id} className="border-t align-middle">
-                  <td className="p-3">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(p.id)}
-                      onChange={() => toggle(p.id)}
-                    />
-                  </td>
-                  <td className="p-3 min-w-[320px]">
-                    <div className="flex items-center gap-3">
-                      {p.images?.[0]?.src && (
-                        <img
-                          src={p.images[0].src}
-                          alt=""
-                          className="w-10 h-10 object-cover rounded-lg border"
-                        />
-                      )}
-                      <span className="font-medium leading-tight">
-                        {p.name || "(namnlös)"}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="p-3 font-mono">{p.sku || "—"}</td>
-                  <td className="p-3">{p.regular_price ?? "—"}</td>
-                  <td className="p-3">
-                    {p.stock_quantity ?? "—"}{" "}
-                    {p.stock_status && (
-                      <span className="ml-1 opacity-60">({p.stock_status})</span>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize">
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="p-3">
-                    {p.categories?.[0]?.id ? `#${p.categories[0].id}` : "—"}
-                  </td>
-                  <td className="p-3">{p.id}</td>
-                </tr>
-              ))}
+            ))}
           </tbody>
         </table>
       </section>
 
       {/* Pagination */}
       <section className="mt-4 flex items-center justify-between">
-        <div className="text-sm opacity-70">
-          Totalt: {data.total} · Sidor: {data.pages}
-        </div>
+        <div className="text-sm opacity-70">Totalt: {data.total} · Sidor: {data.pages}</div>
         <div className="flex gap-2">
-          <button
-            disabled={!canPrev || loading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="px-3 py-2 rounded-xl border disabled:opacity-50"
-          >
-            Föregående
-          </button>
+          <button disabled={!canPrev || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">Föregående</button>
           <span className="px-2 py-2">{data.page}</span>
-          <button
-            disabled={!canNext || loading}
-            onClick={() => setPage((p) => p + 1)}
-            className="px-3 py-2 rounded-xl border disabled:opacity-50"
-          >
-            Nästa
-          </button>
+          <button disabled={!canNext || loading} onClick={() => setPage((p) => p + 1)} className="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">Nästa</button>
         </div>
       </section>
     </>
   );
 }
 
-/* ========================================================================
-   Flik 2: Import & synk (prisfil + snabbimport + dry-run/import-run)
-======================================================================== */
+/* =====================================================================
+   Flik 2 – Import & synk
+===================================================================== */
 function ImportTab() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [pub, setPub] = useState(true);
-
   const [bpSubs, setBpSubs] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedSubs, setSelectedSubs] = useState<string[]>([]);
 
   useEffect(() => {
     (async () => {
       try {
-        const j = await apiFetch<{ items: Array<{ id: string; name: string }> }>(
-          "/api/britpart-subcategories"
-        );
+        const res = await fetch("/api/britpart-subcategories");
+        const j = await res.json();
         setBpSubs(j.items || []);
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     })();
   }, []);
 
@@ -571,12 +444,14 @@ function ImportTab() {
       addLog(`Laddar upp prisfil: ${file.name}`);
       const buf = await file.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-      const j = await apiFetch<{ updated: number; failed: number }>("/api/price-upload", {
+      const res = await fetch("/api/price-upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, base64, publish: pub }),
       });
-      addLog(`Prisimport klar: uppdaterade ${j?.updated ?? "-"}, misslyckades ${j?.failed ?? "-"}.`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Fel vid prisimport");
+      addLog(`Prisimport klar: uppdaterade ${j.updated}, misslyckades ${j.failed}.`);
     } catch (e: any) {
       addLog(`Fel: ${e.message}`);
     } finally {
@@ -584,23 +459,17 @@ function ImportTab() {
     }
   }
 
-  async function handleImportOne(payload: {
-    sku: string;
-    name?: string;
-    price?: string;
-    stock?: number;
-    categoryId?: number;
-    status?: string;
-    image?: string;
-  }) {
+  async function handleImportOne(payload: { sku: string; name?: string; price?: string; stock?: number; categoryId?: number; status?: string; image?: string; }) {
     try {
       setBusy(true);
       addLog(`Importerar produkt: ${payload.sku}`);
-      const j = await apiFetch<{ id: number; status: string }>("/api/import-one", {
+      const res = await fetch("/api/import-one", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Fel vid import");
       addLog(`OK: #${j.id} (${j.status})`);
     } catch (e: any) {
       addLog(`Fel: ${e.message}`);
@@ -611,22 +480,17 @@ function ImportTab() {
 
   async function dryRun() {
     try {
-      if (selectedSubs.length === 0) {
-        alert("Välj minst en Britpart-underkategori");
-        return;
-      }
+      if (selectedSubs.length === 0) { alert("Välj minst en Britpart-underkategori"); return; }
       setBusy(true);
       addLog(`Dry-run: ${selectedSubs.length} underkategorier`);
-      const j = await apiFetch<any>("/api/import-dry-run", {
+      const res = await fetch("/api/import-dry-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subcategoryIds: selectedSubs }),
       });
-      addLog(
-        `Dry-run klart: create=${j?.summary?.create ?? 0}, update=${j?.summary?.update ?? 0}, skip=${
-          j?.summary?.skip ?? 0
-        }`
-      );
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Dry-run misslyckades");
+      addLog(`Dry-run klart: create=${j?.summary?.create}, update=${j?.summary?.update}, skip=${j?.summary?.skip}`);
     } catch (e: any) {
       addLog(`Fel: ${e.message}`);
     } finally {
@@ -636,17 +500,16 @@ function ImportTab() {
 
   async function runImport() {
     try {
-      if (selectedSubs.length === 0) {
-        alert("Välj minst en Britpart-underkategori");
-        return;
-      }
+      if (selectedSubs.length === 0) { alert("Välj minst en Britpart-underkategori"); return; }
       setBusy(true);
       addLog(`Kör import (${pub ? "publish" : "draft"}) för ${selectedSubs.length} underkategorier`);
-      const j = await apiFetch<{ jobId: string }>("/api/import-run", {
+      const res = await fetch("/api/import-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subcategoryIds: selectedSubs, publish: pub }),
       });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Import misslyckades");
       addLog(`Import startad: jobId=${j.jobId}`);
     } catch (e: any) {
       addLog(`Fel: ${e.message}`);
@@ -655,133 +518,72 @@ function ImportTab() {
     }
   }
 
-  /* UI state för snabbimport */
+  // UI state – snabbimport
   const [sku, setSku] = useState("");
   const [pname, setPname] = useState("");
   const [pprice, setPprice] = useState("");
   const [pstock, setPstock] = useState<number | "">("");
   const [pcat, setPcat] = useState<number | "">("");
-  const [pstatus, setPstatus] = useState<"publish" | "draft">("publish");
+  const [pstatus, setPstatus] = useState<"publish"|"draft">("publish");
   const [pimg, setPimg] = useState("");
 
   return (
-    <div className="grid xl:grid-cols-3 gap-6">
+    <div className="grid lg:grid-cols-3 gap-6">
       {/* A: Prisfil */}
-      <section className="bg-white rounded-2xl shadow-sm border p-5">
+      <section className={`${brand.card} p-5`}>
         <h2 className="text-lg font-semibold mb-1">Prisfil (Excel/CSV) → WooCommerce</h2>
-        <p className="text-sm opacity-70 mb-3">
-          Format: <code>SKU, Pris, Lager, Status</code>. Filen skickas base64 och parsas server-side.
-        </p>
-        <label className="block rounded-xl border px-4 py-6 text-center cursor-pointer hover:bg-slate-50">
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])}
-          />
+        <p className="text-sm opacity-70 mb-3">Format: <code>SKU, Pris, Lager, Status</code>. Filen skickas base64 och parsas server-side.</p>
+        <label className="block rounded-lg border px-4 py-6 text-center cursor-pointer bg-white hover:bg-slate-50 font-semibold">
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])} />
           {busy ? "Bearbetar…" : "Välj fil…"}
         </label>
         <label className="mt-3 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="accent-amber-600"
-            checked={pub}
-            onChange={() => setPub(!pub)}
-          />{" "}
-          Publicera direkt (annars draft)
+          <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} /> Publicera direkt (annars draft)
         </label>
       </section>
 
-      {/* B: Snabbimport (en produkt) */}
-      <section className="bg-white rounded-2xl shadow-sm border p-5">
+      {/* B: Snabbimport */}
+      <section className={`${brand.card} p-5`}>
         <h2 className="text-lg font-semibold mb-1">Britpart snabbimport (1 produkt)</h2>
-        <p className="text-sm opacity-70 mb-3">
-          Fyll i fälten nedan (SKU = Britpart part number). Använd detta för att test-importera en
-          enstaka produkt.
-        </p>
+        <p className="text-sm opacity-70 mb-3">Fyll i fälten (SKU = Britpart part number).</p>
         <div className="grid grid-cols-2 gap-2">
-          <input
-            value={sku}
-            onChange={(e) => setSku(e.target.value)}
-            placeholder="SKU (obligatorisk)"
-            className="rounded-xl border px-3 py-2 col-span-2"
-          />
-          <input
-            value={pname}
-            onChange={(e) => setPname(e.target.value)}
-            placeholder="Namn"
-            className="rounded-xl border px-3 py-2 col-span-2"
-          />
-          <input
-            value={pprice}
-            onChange={(e) => setPprice(e.target.value)}
-            placeholder="Pris (SEK)"
-            className="rounded-xl border px-3 py-2"
-          />
-          <input
-            value={pstock as any}
-            onChange={(e) => setPstock(e.target.value ? Number(e.target.value) : "")}
-            placeholder="Lager"
-            className="rounded-xl border px-3 py-2"
-          />
-          <input
-            value={pcat as any}
-            onChange={(e) => setPcat(e.target.value ? Number(e.target.value) : "")}
-            placeholder="Kategori ID"
-            className="rounded-xl border px-3 py-2"
-          />
-          <select
-            value={pstatus}
-            onChange={(e) => setPstatus(e.target.value as any)}
-            className="rounded-xl border px-3 py-2"
-          >
+          <input value={sku} onChange={(e)=>setSku(e.target.value)} placeholder="SKU (obligatorisk)" className="rounded-lg border px-3 py-2 col-span-2" />
+          <input value={pname} onChange={(e)=>setPname(e.target.value)} placeholder="Namn" className="rounded-lg border px-3 py-2 col-span-2" />
+          <input value={pprice} onChange={(e)=>setPprice(e.target.value)} placeholder="Pris (SEK)" className="rounded-lg border px-3 py-2" />
+          <input value={pstock as any} onChange={(e)=>setPstock(e.target.value ? Number(e.target.value) : "")} placeholder="Lager" className="rounded-lg border px-3 py-2" />
+          <input value={pcat as any} onChange={(e)=>setPcat(e.target.value ? Number(e.target.value) : "")} placeholder="Kategori ID" className="rounded-lg border px-3 py-2" />
+          <select value={pstatus} onChange={(e)=>setPstatus(e.target.value as any)} className="rounded-lg border px-3 py-2">
             <option value="publish">Publicera</option>
             <option value="draft">Utkast</option>
           </select>
-          <input
-            value={pimg}
-            onChange={(e) => setPimg(e.target.value)}
-            placeholder="Bild-URL (valfritt)"
-            className="rounded-xl border px-3 py-2 col-span-2"
-          />
+          <input value={pimg} onChange={(e)=>setPimg(e.target.value)} placeholder="Bild-URL (valfritt)" className="rounded-lg border px-3 py-2 col-span-2" />
         </div>
         <button
           disabled={!sku || busy}
-          onClick={() =>
-            handleImportOne({
-              sku,
-              name: pname || undefined,
-              price: pprice || undefined,
-              stock: pstock === "" ? undefined : Number(pstock),
-              categoryId: pcat === "" ? undefined : Number(pcat),
-              status: pstatus,
-              image: pimg || undefined,
-            })
-          }
-          className={`mt-3 px-4 py-2 rounded-xl text-white ${brand.darkBtn} disabled:opacity-50`}
+          onClick={() => handleImportOne({
+            sku, name: pname || undefined, price: pprice || undefined,
+            stock: (pstock===""? undefined : Number(pstock)),
+            categoryId: (pcat===""? undefined : Number(pcat)),
+            status: pstatus, image: pimg || undefined
+          })}
+          className={`mt-3 px-4 py-2 rounded-lg font-semibold ${brand.secondary} disabled:opacity-50`}
         >
           Importera nu
         </button>
       </section>
 
-      {/* C: Britpart underkategorier → dry-run / run */}
-      <section className="bg-white rounded-2xl shadow-sm border p-5">
+      {/* C: Britpart underkategorier */}
+      <section className={`${brand.card} p-5`}>
         <h2 className="text-lg font-semibold mb-1">Britpart underkategorier</h2>
-        <p className="text-sm opacity-70 mb-3">
-          Välj en eller flera underkategorier och kör dry-run eller verklig import.
-        </p>
-        <div className="h-48 overflow-auto rounded-xl border p-2">
+        <p className="text-sm opacity-70 mb-3">Välj en eller flera och kör dry-run eller import.</p>
+        <div className="h-48 overflow-auto rounded-lg border p-2 bg-white">
           {bpSubs.map((s) => (
             <label key={s.id} className="flex items-center gap-2 py-1">
               <input
                 type="checkbox"
                 className="accent-amber-600"
                 checked={selectedSubs.includes(s.id)}
-                onChange={() =>
-                  setSelectedSubs((prev) =>
-                    prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]
-                  )
-                }
+                onChange={() => setSelectedSubs((prev) => prev.includes(s.id) ? prev.filter(x=>x!==s.id) : [...prev, s.id])}
               />
               <span className="truncate">{s.name}</span>
               <span className="ml-auto text-xs opacity-60">#{s.id}</span>
@@ -789,27 +591,17 @@ function ImportTab() {
           ))}
         </div>
         <div className="mt-3 flex items-center gap-2">
-          <button disabled={busy} onClick={dryRun} className="px-4 py-2 rounded-xl border">
-            Dry-run
-          </button>
-          <button
-            disabled={busy}
-            onClick={runImport}
-            className={`px-4 py-2 rounded-xl text-white ${brand.yellow}`}
-          >
-            Kör import
-          </button>
+          <button disabled={busy} onClick={dryRun} className="px-4 py-2 rounded-lg border bg-white hover:bg-slate-50 font-semibold">Dry-run</button>
+          <button disabled={busy} onClick={runImport} className={`px-4 py-2 rounded-lg font-semibold ${brand.primary}`}>Kör import</button>
         </div>
       </section>
 
       {/* D: Logg */}
-      <section className="xl:col-span-3 bg-white rounded-2xl shadow-sm border p-5">
+      <section className={`lg:col-span-3 ${brand.card} p-5`}>
         <h2 className="text-lg font-semibold mb-2">Logg</h2>
-        <div className="h-64 overflow-auto rounded-xl border bg-slate-50 p-3 text-sm font-mono leading-relaxed">
-          {log.length === 0 ? (
-            <div className="text-slate-400">Inga händelser ännu.</div>
-          ) : (
-            <ul className="space-y-1">{log.map((l, i) => <li key={i}>{l}</li>)}</ul>
+        <div className="h-64 overflow-auto rounded-lg border bg-slate-50 p-3 text-sm font-mono leading-relaxed">
+          {log.length===0 ? <div className="text-slate-400">Inga händelser ännu.</div> : (
+            <ul className="space-y-1">{log.map((l,i)=><li key={i}>{l}</li>)}</ul>
           )}
         </div>
       </section>
