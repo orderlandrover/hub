@@ -18,17 +18,10 @@ type WCCategory = { id: number; name: string; parent: number };
 
 /* ---------- Tema (hög kontrast) ---------- */
 const brand = {
-  headerBg: "bg-slate-900",
-  headerText: "text-white",
-  // primär (gul) med mörk text för max kontrast
-  primary: "bg-amber-500 text-slate-900 hover:bg-amber-400",
-  // sekundär (mörk) med vit text
-  secondary: "bg-slate-800 text-white hover:bg-slate-700",
-  // destruktiv
-  danger: "bg-red-600 text-white hover:bg-red-700",
-  // kant/ytor
-  card: "bg-white rounded-2xl shadow-sm border",
-  chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
+  primary: "bg-slate-900 text-white hover:bg-slate-800",          // mörk topp & primär knapp
+  secondary: "bg-white text-slate-900 border hover:bg-slate-50",  // vit knapp med mörk text
+  accent: "bg-amber-500 text-black hover:bg-amber-600",           // gul med svart text
+  danger: "bg-red-600 text-white hover:bg-red-700",               // röd, tydlig radera
 };
 
 /* ===================================================================== */
@@ -37,7 +30,7 @@ export default function App() {
 
   const header = useMemo(
     () => (
-      <header className={`${brand.headerBg} ${brand.headerText} sticky top-0 z-20 shadow`}>
+      <header className={`${brand.primary} sticky top-0 z-20 shadow`}>
         <div className="w-full mx-auto px-6 py-4 flex items-center justify-between">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
             Britpart Integration Dashboard
@@ -288,19 +281,20 @@ function ProductsTab() {
           </div>
           <div className="xl:col-span-2 flex gap-2">
             <button
-              onClick={() => { setPage(1); load({ page: 1, search, category, orderby, order, per_page: perPage, status }); }}
-              className={`px-4 py-2 rounded-lg font-semibold ${brand.secondary}`}
-              disabled={loading}
-            >
-              {loading ? "Hämtar…" : "Hämta produkter"}
-            </button>
-            <button
-              onClick={() => { setSearch(""); setStatus("any"); setCategory(""); setPage(1); load({ page: 1, search: "", status: "any", category: "" }); }}
-              className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50"
-              disabled={loading}
-            >
-              Rensa
-            </button>
+  onClick={() => { setPage(1); load({ page: 1, search, category, orderby, order, per_page: perPage, status }); }}
+  className={`px-4 py-2 rounded-xl ${brand.primary}`}
+  disabled={loading}
+>
+  {loading ? "Hämtar…" : "Hämta produkter"}
+</button>
+
+<button
+  onClick={() => { setSearch(""); setStatus("any"); setCategory(""); setPage(1); load({ page: 1, search: "", status: "any", category: "" }); }}
+  className={`px-4 py-2 rounded-xl ${brand.secondary}`}
+  disabled={loading}
+>
+  Rensa
+</button>
           </div>
 
           <div className="xl:col-span-12 grid grid-cols-2 md:grid-cols-5 gap-3 pt-2">
@@ -331,40 +325,44 @@ function ProductsTab() {
       {/* Bulk actions */}
       <section className={`${brand.card} p-4 mb-4 flex flex-wrap items-center gap-3`}>
         <button
-          disabled={selected.length===0 || loading}
-          onClick={() => bulkUpdate({ status: "publish" })}
-          className={`px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.primary}`}
-        >
-          Publicera
-        </button>
-        <button
-          disabled={selected.length===0 || loading}
-          onClick={() => bulkUpdate({ status: "draft" })}
-          className={`px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.secondary}`}
-        >
-          Avpublicera
-        </button>
-        <button
-          disabled={selected.length===0 || loading}
-          onClick={askNewPrice}
-          className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50 disabled:opacity-50"
-        >
-          Nytt pris (SEK)
-        </button>
-        <button
-          disabled={selected.length===0 || loading}
-          onClick={assignCategory}
-          className="px-4 py-2 rounded-lg border font-semibold bg-white hover:bg-slate-50 disabled:opacity-50"
-        >
-          Sätt kategori
-        </button>
-        <button
-          disabled={selected.length===0 || loading}
-          onClick={bulkDelete}
-          className={`ml-auto px-4 py-2 rounded-lg font-semibold disabled:opacity-50 ${brand.danger}`}
-        >
-          Radera
-        </button>
+  disabled={selected.length===0 || loading}
+  onClick={() => bulkUpdate({ status: "publish" })}
+  className={`px-4 py-2 rounded-xl ${brand.accent} disabled:opacity-50`}
+>
+  Publicera
+</button>
+
+<button
+  disabled={selected.length===0 || loading}
+  onClick={() => bulkUpdate({ status: "draft" })}
+  className={`px-4 py-2 rounded-xl ${brand.secondary} disabled:opacity-50`}
+>
+  Avpublicera
+</button>
+
+<button
+  disabled={selected.length===0 || loading}
+  onClick={askNewPrice}
+  className={`px-4 py-2 rounded-xl ${brand.secondary} disabled:opacity-50`}
+>
+  Nytt pris (SEK)
+</button>
+
+<button
+  disabled={selected.length===0 || loading}
+  onClick={assignCategory}
+  className={`px-4 py-2 rounded-xl ${brand.secondary} disabled:opacity-50`}
+>
+  Sätt kategori
+</button>
+
+<button
+  disabled={selected.length===0 || loading}
+  onClick={bulkDelete}
+  className={`ml-auto px-4 py-2 rounded-xl ${brand.danger} disabled:opacity-50`}
+>
+  Radera
+</button>
         <span className="text-sm opacity-70">Valda: {selected.length}</span>
       </section>
 
