@@ -425,6 +425,28 @@ function ImportTab() {
     }
   }
 
+  // Lägg in i ImportTab()
+async function runDryRun(ids: string[]) {
+  try {
+    if (ids.length === 0) { addLog("Välj minst en underkategori"); return; }
+    setBusy(true);
+    addLog(`Dry-run: ${ids.join(", ")}`);
+    const res = await fetch("/api/import-dry-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subcategoryIds: ids }),
+    });
+    const txt = await res.text();
+    const j = txt ? JSON.parse(txt) : {};
+    if (!res.ok) throw new Error(j?.error || txt || "Import dry-run failed");
+    addLog(`Dry-run OK: ${JSON.stringify(j).slice(0, 300)}…`);
+  } catch (e: any) {
+    addLog(`Fel: ${e.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
   // Snabbimport (oförändrat)
   const [sku, setSku] = useState("");
   const [pname, setPname] = useState("");

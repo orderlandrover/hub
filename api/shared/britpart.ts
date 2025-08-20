@@ -1,31 +1,38 @@
 import { env } from "./env";
 
-function join(base: string, path: string) {
-  const b = base.replace(/\/+$/, "");
-  const p = path.replace(/^\/+/, "");
-  return `${b}/${p}`;
-}
+/**
+ * Kallar Britpart och lägger alltid till ?token=… som query.
+ * Använd path som "/part/getall" och valfria extra query-parametrar via `query`.
+ */
+export async function britpart(
+  path: string,
+  init: RequestInit = {},
+  query: Record<string, string | number | boolean> = {}
+) {
+  const base = env.BRITPART_API_BASE?.replace(/\/$/, "") || "";
+  const url = new URL(base + path);
 
-export async function britpartJson(path: string, init: RequestInit = {}) {
-  const url = join(env.BRITPART_API_BASE, path);
-  const res = await fetch(url, {
+  // lägg på token + ev övriga query-parametrar
+  url.searchParams.set("token", env.BRITPART_API_KEY || "");
+  for (const [k, v] of Object.entries(query)) {
+    url.searchParams.set(k, String(v));
+  }
+
+  const res = await fetch(url.toString(), {
     ...init,
     headers: {
-      // Lägg till auth-header här om Britpart kräver nyckel/token
-      "Accept": "application/json",
+      "Content-Type": "application/json",
       ...(init.headers || {}),
+      // OBS: ingen Authorization här – Britpart vill ha token i query eller "Token" header
     },
   });
 
-  const text = await res.text();
+  // Britpart kan returnera en HTML-sida vid fel (404/403). Gör felet läsbart.
+  const ct = res.headers.get("content-type") || "";
   if (!res.ok) {
-    // Skicka upp till 300 tecken av svaret så ser vi direkt om det är HTML
+    const text = await res.text();
     throw new Error(`Britpart ${res.status} ${res.statusText}: ${text.slice(0, 300)}`);
   }
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Britpart: svarade inte med JSON (började med: ${text.slice(0, 120)})`);
-  }
+  // Låt anroparen parsa JSON själv (vissa endpoints kan svara med annat)
+  return res;
 }

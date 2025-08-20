@@ -15,14 +15,14 @@
 
 /* Knapp-bas (gäller alla knappar du märker med .ui-btn) */
 .ui-btn{
-  background:var(--ui-btn-bg) !important;
-  color:var(--ui-btn-text) !important;
+  background:#d4af37!important;
+  color:#fffc!important;
   border:1px solid rgba(0,0,0,.15);
 }
 .ui-btn:hover{ filter:brightness(.95); }
 
 /* Radera-knappen */
 .ui-btn--danger{
-  background:var(--ui-btn-danger) !important;
+  background:#e11d48!important;
   color:#fff !important;
 }
