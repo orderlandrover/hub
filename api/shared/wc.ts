@@ -1,6 +1,6 @@
 import { env } from "./env";
 
-function authHeader() {
+function basicAuth() {
   const token = Buffer.from(`${env.WC_KEY}:${env.WC_SECRET}`).toString("base64");
   return `Basic ${token}`;
 }
@@ -11,7 +11,7 @@ export async function wcRequest(path: string, init: RequestInit = {}) {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      Authorization: authHeader(),
+      Authorization: basicAuth(),
       ...(init.headers || {}),
     },
   });
@@ -25,5 +25,5 @@ export async function wcRequest(path: string, init: RequestInit = {}) {
 export async function getProductBySku(sku: string) {
   const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
   const arr = await r.json();
-  return (arr && arr[0]) || null;
+  return Array.isArray(arr) ? arr[0] || null : null;
 }

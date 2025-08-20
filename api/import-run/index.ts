@@ -1,19 +1,25 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { assertEnv } from "../shared/env";
-import { britpart } from "../shared/britpart";
+import { britpartGetAllJSON } from "../shared/britpart";
 import { getProductBySku, wcRequest } from "../shared/wc";
-import { BritpartProduct, toWCProduct } from "../shared/map";
 
-async function fetchBritpartForSubcat(subId: string): Promise<BritpartProduct[]> {
-  try {
-    const r = await britpart(`?subcategory=${encodeURIComponent(subId)}`);
-    const j = await r.json();
-    return (j.items || j.data || j) as BritpartProduct[];
-  } catch {
-    const r2 = await britpart(`/parts?subcategory=${encodeURIComponent(subId)}`);
-    const j2 = await r2.json();
-    return (j2.items || j2.data || j2) as BritpartProduct[];
-  }
+type BpItem = {
+  partNumber?: string;
+  description?: string;
+  price?: number | string;
+  imageUrls?: string[];
+  stockQty?: number;
+};
+
+function mapToWC(p: BpItem) {
+  return {
+    sku: p.partNumber,
+    name: p.description || p.partNumber,
+    regular_price: p.price != null ? String(p.price) : undefined,
+    images: (p.imageUrls || []).map((src) => ({ src })),
+    manage_stock: p.stockQty != null,
+    stock_quantity: p.stockQty,
+  } as any;
 }
 
 app.http("import-run", {
@@ -22,40 +28,33 @@ app.http("import-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = (await req.json()) as { subcategoryIds: string[]; categoryId?: number };
-      const { subcategoryIds = [], categoryId } = body || {};
-      if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
-        return { status: 400, jsonBody: { error: "subcategoryIds required" } };
-      }
+      const body = (await req.json()) as { subcategoryIds: string[] };
+      const ids = Array.isArray(body?.subcategoryIds) ? body.subcategoryIds : [];
+      if (!ids.length) return { status: 400, jsonBody: { error: "subcategoryIds required" } };
 
-      let created = 0;
-      let updated = 0;
-      const errors: { sku: string; error: string }[] = [];
+      let created = 0, updated = 0;
+      const errors: Array<{ sku: string; error: string }> = [];
 
-      for (const sid of subcategoryIds) {
-        const parts = await fetchBritpartForSubcat(sid);
+      for (const id of ids) {
+        const data = await britpartGetAllJSON<any>({ subcategory: id });
+        const items: BpItem[] = Array.isArray(data) ? data : (data.items || data.data || []);
 
-        // Batcha lite snällt
-        for (const p of parts) {
-          if (!p.partNumber) continue;
+        for (const bp of items) {
+          const sku = bp.partNumber?.trim();
+          if (!sku) continue;
           try {
-            const mapped = toWCProduct(p, categoryId);
-            const existing = await getProductBySku(p.partNumber);
+            const existing = await getProductBySku(sku);
+            const payload = mapToWC(bp);
+
             if (!existing) {
-              await wcRequest(`/products`, {
-                method: "POST",
-                body: JSON.stringify(mapped),
-              });
+              await wcRequest(`/products`, { method: "POST", body: JSON.stringify(payload) });
               created++;
             } else {
-              await wcRequest(`/products/${existing.id}`, {
-                method: "PUT",
-                body: JSON.stringify(mapped),
-              });
+              await wcRequest(`/products/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) });
               updated++;
             }
           } catch (err: any) {
-            errors.push({ sku: p.partNumber, error: String(err?.message || err) });
+            errors.push({ sku, error: String(err?.message || err) });
           }
         }
       }
