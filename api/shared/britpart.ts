@@ -1,32 +1,31 @@
 import { env } from "./env";
 
-function buildBritpartUrl(pathOrQuery: string) {
-  const base = (env.BRITPART_API_BASE || "").replace(/\/$/, "");
-  if (!pathOrQuery) return base;
-  if (pathOrQuery.startsWith("?")) return base + pathOrQuery;
-  if (pathOrQuery.startsWith("/")) return base + pathOrQuery;
-  return `${base}/${pathOrQuery}`;
+function join(base: string, path: string) {
+  const b = base.replace(/\/+$/, "");
+  const p = path.replace(/^\/+/, "");
+  return `${b}/${p}`;
 }
 
-export async function britpart(pathOrQuery: string = "", init: RequestInit = {}) {
-  const url = buildBritpartUrl(pathOrQuery);
+export async function britpartJson(path: string, init: RequestInit = {}) {
+  const url = join(env.BRITPART_API_BASE, path);
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      // Lägg till auth-header här om Britpart kräver nyckel/token
+      "Accept": "application/json",
+      ...(init.headers || {}),
+    },
+  });
 
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    ...(init.headers as any),
-  };
-
-  // Skicka nyckeln på två sätt för säkerhets skull
-  if (env.BRITPART_API_KEY) {
-    headers.Authorization = headers.Authorization || `Bearer ${env.BRITPART_API_KEY}`;
-    headers["x-api-key"] = headers["x-api-key"] || env.BRITPART_API_KEY;
-  }
-
-  const res = await fetch(url, { ...init, headers });
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text}`);
+    // Skicka upp till 300 tecken av svaret så ser vi direkt om det är HTML
+    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text.slice(0, 300)}`);
   }
-  return res;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Britpart: svarade inte med JSON (började med: ${text.slice(0, 120)})`);
+  }
 }

@@ -388,22 +388,21 @@ function ImportTab() {
 
   async function handleDryRun() {
     try {
-      setBusy(true);
-      if (selectedSubs.length === 0) { addLog("Välj minst 1 underkategori."); return; }
-      addLog(`Dry-run för ${selectedSubs.length} underkategori(er)…`);
-      const res = await fetch("/api/import-dry-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subcategoryIds: selectedSubs }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || "Dry-run misslyckades");
-      addLog(`Dry-run klart: create=${j.summary?.create || 0}, update=${j.summary?.update || 0}, skip=${j.summary?.skip || 0}`);
-    } catch (e: any) {
-      addLog(`Fel: ${e?.message || String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true);
+    addLog(`Dry-run: ${selectedSubs.join(", ")}`);
+    const res = await fetch("/api/import-dry-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subcategoryIds: selectedSubs })
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j?.error || "Fel vid dry-run");
+    addLog(`Dry-run klart: totalt ${j.summary.total} artiklar (${j.subcategories.map((r:any)=>`#${r.id}:${r.count}`).join(", ")})`);
+  } catch (e:any) {
+    addLog(`Fel: ${e.message}`);
+  } finally {
+    setBusy(false);
+  }
   }
 
   async function handleRun() {
@@ -552,8 +551,8 @@ function ImportTab() {
           ))}
         </div>
         <div className="mt-3 flex items-center gap-2">
-          <button onClick={handleDryRun} disabled={busy || selectedSubs.length===0} className="px-4 py-2 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">Dry-run</button>
-          <button onClick={handleRun} disabled={busy || selectedSubs.length===0} className="px-4 py-2 rounded-lg text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50">Kör import</button>
+          <button onClick={handleDryRun} disabled={busy || selectedSubs.length===0} className="px-4 py-2 rounded-lg ui-btn">Dry-run</button>
+          <button onClick={handleRun} disabled={busy || selectedSubs.length===0} className="px-4 py-2 rounded-lg ui-btn">Kör import</button>
         </div>
       </section>
 
