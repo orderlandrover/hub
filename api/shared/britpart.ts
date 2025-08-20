@@ -1,38 +1,65 @@
 import { env } from "./env";
 
 /**
- * Kallar Britpart och lägger alltid till ?token=… som query.
- * Använd path som "/part/getall" och valfria extra query-parametrar via `query`.
+ * Bygg korrekt URL mot Britparts "getall".
+ * - BRITPART_API_BASE ska vara t.ex. "https://www.britpart.com/api/v1/part/getall"
+ * - queryOrPath kan vara "?subcategory=44" eller "/parts?subcategory=44"
+ *   ("/parts?" normaliseras till bara "?").
+ * - Lägger alltid på token som query-param och skickar även Token-header.
  */
-export async function britpart(
-  path: string,
-  init: RequestInit = {},
-  query: Record<string, string | number | boolean> = {}
-) {
-  const base = env.BRITPART_API_BASE?.replace(/\/$/, "") || "";
-  const url = new URL(base + path);
+function buildBritpartUrl(queryOrPath: string): string {
+  const base = (env.BRITPART_API_BASE || "").replace(/\/+$/, ""); // utan trailing slash
+  let suffix = String(queryOrPath || "");
 
-  // lägg på token + ev övriga query-parametrar
-  url.searchParams.set("token", env.BRITPART_API_KEY || "");
-  for (const [k, v] of Object.entries(query)) {
-    url.searchParams.set(k, String(v));
+  // Normalisera "/parts?x=y" → "?x=y" för att undvika ".../getall/parts?..."
+  if (suffix.startsWith("/parts?")) {
+    suffix = "?" + suffix.split("?")[1];
   }
 
-  const res = await fetch(url.toString(), {
+  // Se till att vi har en ?-del
+  if (!suffix.startsWith("?")) {
+    // om någon skickar tomt eller annat, gör den till tom query
+    suffix = suffix ? `?${suffix.replace(/^\?/, "")}` : "?";
+  }
+
+  // Lägg på token som queryparam (oavsett om den redan finns)
+  const hasQuery = suffix.includes("?");
+  const sep = hasQuery ? "&" : "?";
+  const withToken = `${suffix}${suffix.includes("token=") ? "" : `${sep}token=${encodeURIComponent(env.BRITPART_API_KEY || "")}`}`;
+
+  return `${base}${withToken}`;
+}
+
+/**
+ * Anropa Britpart "getall" med Token-header + token query-param.
+ * Kastar tydligt felmeddelande om status != 2xx.
+ */
+export async function britpart(queryOrPath: string, init: RequestInit = {}) {
+  if (!env.BRITPART_API_BASE) {
+    throw new Error("Missing App Setting: BRITPART_API_BASE");
+  }
+  if (!env.BRITPART_API_KEY) {
+    throw new Error("Missing App Setting: BRITPART_API_KEY");
+  }
+
+  const url = buildBritpartUrl(queryOrPath);
+
+  const res = await fetch(url, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      Accept: "application/json",
+      // Britpart vill ha Token-header (inte Authorization)
+      Token: env.BRITPART_API_KEY,
       ...(init.headers || {}),
-      // OBS: ingen Authorization här – Britpart vill ha token i query eller "Token" header
     },
   });
 
-  // Britpart kan returnera en HTML-sida vid fel (404/403). Gör felet läsbart.
-  const ct = res.headers.get("content-type") || "";
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text.slice(0, 300)}`);
+    // gör felet lättare att läsa i loggen
+    const body = text.length > 600 ? `${text.slice(0, 600)}…` : text;
+    throw new Error(`Britpart ${res.status} ${res.statusText}: ${body}`);
   }
-  // Låt anroparen parsa JSON själv (vissa endpoints kan svara med annat)
+
   return res;
 }

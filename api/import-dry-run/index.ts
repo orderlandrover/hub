@@ -1,6 +1,6 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { assertEnv } from "../shared/env";
-import { britpart } from "../shared/britpart";
+import { britpartGetAll } from "../shared/britpart";
 
 app.http("import-dry-run", {
   methods: ["POST"],
@@ -8,43 +8,41 @@ app.http("import-dry-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = (await req.json()) as { subcategoryIds: Array<string | number> };
-      const ids = (body?.subcategoryIds || []).map(String).filter(Boolean);
 
+      const body = (await req.json()) as {
+        subcategoryIds: string[];
+        // (valfritt i framtiden) categoryMap?: Record<string, number>;
+      };
+
+      const ids = Array.isArray(body?.subcategoryIds) ? body!.subcategoryIds : [];
       if (ids.length === 0) {
         return { status: 400, jsonBody: { error: "subcategoryIds required" } };
       }
 
-      let parts: any[] = [];
+      const perSub: Array<{ subcategory: string; count: number }> = [];
+      let total = 0;
+
+      // Hämta listor per vald underkategori
       for (const id of ids) {
-        // enligt Britpart: /part/getall?subcategory=<id>&token=<KEY>
-        const r = await britpart("/part/getall", {}, { subcategory: id });
-        const txt = await r.text();
-
-        // robust parse: vissa svar kan vara tomma, html osv
-        let data: any = null;
-        try { data = JSON.parse(txt); } catch { /* låt data vara null */ }
-
-        const items = Array.isArray(data)
-          ? data
-          : (data?.parts || data?.items || data?.data || []);
-
-        if (Array.isArray(items)) {
-          parts = parts.concat(items);
-        }
+        // Viktigt: Britpart har token som query param (och/eller "Token" header)
+        const r = await britpartGetAll({ subcategory: id });
+        // API:t kan returnera olika former; normalisera
+        const j = await r.json();
+        const items: any[] = Array.isArray(j) ? j : (j.items || j.data || []);
+        perSub.push({ subcategory: id, count: items.length });
+        total += items.length;
       }
 
-      // returnera bara en sammanfattning så länge
+      // Här kan vi i nästa steg jämföra mot WC /products?sku=... för att få create/update/skip.
       return {
         jsonBody: {
-          ok: true,
-          summary: { subcategories: ids, count: parts.length },
-          sample: (parts || []).slice(0, 10)  // visa de 10 första för kontroll
+          summary: { create: total, update: 0, skip: 0 }, // placeholders tills diff mot WC är på plats
+          perSub,
         },
       };
     } catch (e: any) {
       ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message } };
+      return { status: 500, jsonBody: { error: e?.message || "Import dry-run failed" } };
     }
   },
 });
