@@ -3,74 +3,55 @@ import * as XLSX from "xlsx";
 import { assertEnv } from "../shared/env";
 import { wcRequest } from "../shared/wc";
 
-type Body = {
+type RoundMode = "near" | "up" | "down";
+type UploadBody = {
   filename: string;
-  base64: string;
-  publish?: boolean;
-  dryRun?: boolean;
-  fxRate: number;         // GBP->SEK
-  markupPct: number;      // %
-  roundMode: "nearest"|"up"|"down"|"none";
-  roundStep: number;      // 1|5|10...
-  wcCategoryIds?: number[]; // valfri filtrering
+  base64: string;              // filinnehåll base64
+  fx: number;                  // GBP -> SEK
+  markupPct: number;           // t.ex. 25
+  roundMode: RoundMode;        // "near" | "up" | "down"
+  step: number;                // t.ex. 1, 5, 10
+  publish?: boolean;           // om vi vill sätta publish samtidigt (valfritt)
+  dryRun?: boolean;            // true => skriv inte till WC
 };
 
-type Row = Record<string, any>;
+type Row = { sku: string; gbp: number };
 
-function normKey(k: string) {
-  return k.toLowerCase().replace(/[^a-z0-9]/g, "");
+function decodeBase64ToUint8Array(b64: string) {
+  const bin = Buffer.from(b64, "base64");
+  return new Uint8Array(bin);
 }
 
-const SKU_KEYS = ["sku","part","partno","partnumber","partcode","code","item","pn","partn","partnum"];
-const PRICE_KEYS = ["price","gbp","retail","retailprice","rrp","net","unitprice","exvat","listprice"];
+function smartHeaders(v: any): Row | null {
+  if (!v) return null;
+  // Försök hitta SKU-kolumn
+  const keys = Object.keys(v);
+  const skuKey = keys.find(k =>
+    /^(sku|part|part\s*number|code|artikel|artnr)$/i.test(String(k).trim())
+  );
+  // Försök hitta pris i GBP
+  const priceKey = keys.find(k =>
+    /(gbp|price.*gbp|pris.*gbp|price|pris)/i.test(String(k).trim())
+  );
 
-function findKey(row: Row, candidates: string[]) {
-  const map: Record<string,string> = {};
-  Object.keys(row || {}).forEach(k => map[normKey(k)] = k);
-  for (const c of candidates) {
-    const hit = map[normKey(c)];
-    if (hit) return hit;
+  const sku = (skuKey ? String(v[skuKey]) : "").trim();
+  const gbpRaw = priceKey ? v[priceKey] : undefined;
+  const gbp = Number(String(gbpRaw).replace(",", "."));
+
+  if (!sku || !isFinite(gbp)) return null;
+  return { sku, gbp };
+}
+
+function roundToStep(value: number, step: number, mode: RoundMode): number {
+  if (step <= 0) return Math.round(value * 100) / 100;
+  const q = value / step;
+  let r: number;
+  switch (mode) {
+    case "up":   r = Math.ceil(q); break;
+    case "down": r = Math.floor(q); break;
+    default:     r = Math.round(q);
   }
-  // sista utväg: första numeriska kolumn som ser ut som pris
-  for (const [k,v] of Object.entries(row || {})) {
-    if (typeof v === "number") return k;
-    if (typeof v === "string" && v.match(/\d/)) return k;
-  }
-  return "";
-}
-
-function parseGBP(v: any): number {
-  if (typeof v === "number") return v;
-  if (v == null) return NaN;
-  const s = String(v).replace(/[^\d.,-]/g,"").replace(",",".");
-  const n = Number(s);
-  return isFinite(n) ? n : NaN;
-}
-
-function applyRounding(x: number, mode: Body["roundMode"], step: number): number {
-  if (step <= 0 || mode === "none") return Math.round(x);
-  const q = x / step;
-  if (mode === "nearest") return Math.round(q) * step;
-  if (mode === "up")      return Math.ceil(q)  * step;
-  if (mode === "down")    return Math.floor(q) * step;
-  return Math.round(x);
-}
-
-async function fetchAllProducts(): Promise<any[]> {
-  const all: any[] = [];
-  for (let page=1;; page++) {
-    const res = await wcRequest(`/products?per_page=100&page=${page}`);
-    const items = await res.json();
-    all.push(...items);
-    if (items.length < 100) break;
-  }
-  return all;
-}
-
-function chunk<T>(arr: T[], size: number) {
-  const out: T[][] = [];
-  for (let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
-  return out;
+  return r * step;
 }
 
 app.http("price-upload", {
@@ -79,96 +60,100 @@ app.http("price-upload", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const b = await req.json() as Body;
-      if (!b?.base64 || !b?.filename) return { status: 400, jsonBody: { error: "filename + base64 krävs" } };
-      if (!b.fxRate || b.fxRate <= 0)  return { status: 400, jsonBody: { error: "fxRate måste vara > 0" } };
 
-      // 1) Läs filen (första bladet / CSV)
-      const buf = Buffer.from(b.base64, "base64");
-      const wb = XLSX.read(buf, { type: "buffer" });
+      const body = (await req.json()) as UploadBody;
+      if (!body?.base64 || !body?.filename) {
+        return { status: 400, jsonBody: { error: "filename och base64 krävs" } };
+      }
+
+      const fx = Number(body.fx ?? 0);
+      const markup = Number(body.markupPct ?? 0) / 100;
+      const step = Number(body.step ?? 1);
+      const mode: RoundMode = (body.roundMode as RoundMode) || "near";
+      const dryRun = !!body.dryRun;
+
+      if (!isFinite(fx) || fx <= 0) return { status: 400, jsonBody: { error: "Ogiltig valutakurs (fx)" } };
+
+      // 1) Läs arbetsbok
+      const u8 = decodeBase64ToUint8Array(body.base64);
+      const wb = XLSX.read(u8, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<Row>(ws, { defval: null });
+      const rows = XLSX.utils.sheet_to_json(ws) as any[];
 
-      if (!rows.length) return { status: 400, jsonBody: { error: "Tom fil" } };
+      // 2) Extrahera (sku, gbp) rader
+      const parsed: Row[] = rows
+        .map(smartHeaders)
+        .filter((x): x is Row => !!x);
 
-      // 2) Hitta kolumnnamn
-      const sk = findKey(rows[0], SKU_KEYS);
-      const pk = findKey(rows[0], PRICE_KEYS);
-      if (!sk || !pk) {
-        return { status: 400, jsonBody: { error: `Kunde inte hitta SKU/priskolumn (hittade SKU='${sk}', pris='${pk}')` } };
+      if (parsed.length === 0) {
+        return { status: 400, jsonBody: { error: "Kunde inte tolka filen (hittade inga SKU/GBP)" } };
       }
 
-      // 3) Bygg karta över WC-produkter (sku->product)
-      const all = await fetchAllProducts();
-      const bySku = new Map<string, any>();
-      all.forEach(p => { if (p?.sku) bySku.set(String(p.sku).trim().toUpperCase(), p); });
-
-      // Filter på WC-kategori om angivet
-      const wcSet = new Set<number>((b.wcCategoryIds || []).map(Number));
-
-      // 4) Räkna om priser
+      // 3) Kör igenom posterna
       const updates: any[] = [];
-      const sample: any[] = [];
-      let matched = 0;
+      const skipped: any[] = [];
+      const notFound: string[] = [];
+      const errors: { sku: string; error: string }[] = [];
 
-      for (const r of rows) {
-        const rawSku = r[sk];
-        const rawGbp = r[pk];
+      for (const r of parsed) {
+        try {
+          // Hitta produkt via SKU (WooCommerce)
+          const resList = await wcRequest(`/products?sku=${encodeURIComponent(r.sku)}`);
+          const list = await resList.json();
+          const p = Array.isArray(list) && list[0];
 
-        const sku = rawSku == null ? "" : String(rawSku).trim().toUpperCase();
-        const gbp = parseGBP(rawGbp);
-        if (!sku || !isFinite(gbp)) continue;
-
-        const wc = bySku.get(sku);
-        if (!wc) continue; // ej i WC
-        matched++;
-
-        if (wcSet.size) {
-          const ids = (wc.categories || []).map((c:any)=>Number(c?.id)).filter(Boolean);
-          if (!ids.some((id:number)=>wcSet.has(id))) continue; // filtrerad bort
-        }
-
-        const base = gbp * b.fxRate * (1 + (b.markupPct || 0)/100);
-        const sek  = applyRounding(base, b.roundMode, b.roundStep || 1);
-        const curr = Number(wc.regular_price ?? wc.price ?? 0);
-
-        updates.push({ id: wc.id, regular_price: String(sek) });
-        if (sample.length < 10) sample.push({ sku, id: wc.id, gbp, old: curr, new: sek });
-      }
-
-      // 5) Dry-run eller uppdatera i batchar
-      if (b.dryRun) {
-        return {
-          jsonBody: {
-            dryRun: true,
-            totalRows: rows.length,
-            matched,
-            wouldUpdate: updates.length,
-            sample
+          if (!p) {
+            notFound.push(r.sku);
+            continue;
           }
-        };
-      }
 
-      let updated = 0;
-      for (const part of chunk(updates, 100)) {
-        const res = await wcRequest(`/products/batch`, {
-          method: "POST",
-          body: JSON.stringify({ update: part })
-        });
-        const j = await res.json();
-        updated += (j?.update?.length || 0);
+          const current = Number(p?.regular_price ?? 0);
+          const sek = roundToStep(r.gbp * fx * (1 + markup), step, mode);
+          const next = Number(sek.toFixed(2));
+
+          // Ingen ändring?
+          if (isFinite(current) && Math.abs(current - next) < 0.009) {
+            skipped.push({ id: p.id, sku: r.sku, price: current });
+            continue;
+          }
+
+          // Dry-run => logga bara
+          if (dryRun) {
+            updates.push({ id: p.id, sku: r.sku, from: current, to: next, dryRun: true });
+            continue;
+          }
+
+          // Uppdatera pris (+ ev status publish)
+          const patch: any = { regular_price: String(next) };
+          if (body.publish === true) patch.status = "publish";
+
+          const resPut = await wcRequest(`/products/${p.id}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+          });
+          const saved = await resPut.json();
+          updates.push({ id: saved.id, sku: r.sku, from: current, to: next });
+        } catch (e: any) {
+          errors.push({ sku: r.sku, error: e?.message || String(e) });
+        }
       }
 
       return {
         jsonBody: {
           ok: true,
-          totalRows: rows.length,
-          matched,
-          updated,
-          sample
-        }
+          total: parsed.length,
+          updated: updates.length,
+          skipped: skipped.length,
+          notFound: notFound.length,
+          errors: errors.length,
+          sample: {
+            updates: updates.slice(0, 10),
+            skipped: skipped.slice(0, 5),
+            notFound: notFound.slice(0, 10),
+            errors: errors.slice(0, 5),
+          },
+        },
       };
-
     } catch (e: any) {
       ctx.error(e);
       return { status: 500, jsonBody: { error: e.message } };
