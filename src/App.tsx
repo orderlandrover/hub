@@ -499,6 +499,15 @@ function ImportTab() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [pub, setPub] = useState(true);
+
+  // Nya fält (prisberäkning)
+  const [fx, setFx] = useState<number>(13.50);          // GBP -> SEK
+  const [markup, setMarkup] = useState<number>(25);     // %
+  const [roundMode, setRoundMode] = useState<"nearest"|"up"|"down"|"none">("nearest");
+  const [roundStep, setRoundStep] = useState<number>(1); // 1, 5, 10 ...
+  const [dry, setDry] = useState<boolean>(true);
+
+  // (Behåll Britpart-subkategorierna om du vill använda dem för import-run senare)
   const [bpSubs, setBpSubs] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedSubs, setSelectedSubs] = useState<string[]>([]);
 
@@ -508,9 +517,7 @@ function ImportTab() {
         const res = await fetch("/api/britpart-subcategories");
         const j = await res.json();
         setBpSubs(j.items || []);
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     })();
   }, []);
 
@@ -519,20 +526,40 @@ function ImportTab() {
     setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 400));
   }
 
+  // -------- Prisfil: uppladdning + beräkning (dry-run / verklig) ----------
   async function handlePriceUpload(file: File) {
     try {
       setBusy(true);
       addLog(`Laddar upp prisfil: ${file.name}`);
       const buf = await file.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+
       const res = await fetch("/api/price-upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, base64, publish: pub }),
+        body: JSON.stringify({
+          filename: file.name,
+          base64,
+          publish: pub,
+          dryRun: dry,
+          fxRate: fx,
+          markupPct: markup,
+          roundMode,
+          roundStep,
+          // valfritt: filtrera mot WC-kategorier senare om du vill
+          // wcCategoryIds: [123, 456]
+        }),
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || "Fel vid prisimport");
-      addLog(`Prisimport klar: uppdaterade ${j.updated}, misslyckades ${j.failed}.`);
+
+      const text = await res.text();
+      const j = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(j?.error || text || "Fel vid prisuppdatering");
+
+      if (dry) {
+        addLog(`Dry-run klart: rader=${j.totalRows}, matchade=${j.matched}, skulle uppdatera=${j.wouldUpdate}. Exempel: ${JSON.stringify(j.sample?.slice?.(0,5) || j.sample)}`);
+      } else {
+        addLog(`Uppdatering klar: rader=${j.totalRows}, matchade=${j.matched}, uppdaterade=${j.updated}`);
+      }
     } catch (e: any) {
       addLog(`Fel: ${e.message}`);
     } finally {
@@ -540,22 +567,28 @@ function ImportTab() {
     }
   }
 
-  async function handleImportOne(payload: {
-    sku: string;
-    name?: string;
-    price?: string;
-    stock?: number;
-    categoryId?: number;
-    status?: string;
-    image?: string;
-  }) {
+  // Snabbimport (oförändrat)
+  const [sku, setSku] = useState("");
+  const [pname, setPname] = useState("");
+  const [pprice, setPprice] = useState("");
+  const [pstock, setPstock] = useState<number | "">("");
+  const [pcat, setPcat] = useState<number | "">("");
+  const [pstatus, setPstatus] = useState<"publish"|"draft">("publish");
+  const [pimg, setPimg] = useState("");
+
+  async function handleImportOne() {
     try {
       setBusy(true);
-      addLog(`Importerar produkt: ${payload.sku}`);
+      addLog(`Importerar produkt: ${sku}`);
       const res = await fetch("/api/import-one", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          sku, name: pname || undefined, price: pprice || undefined,
+          stock: (pstock===""? undefined : Number(pstock)),
+          categoryId: (pcat===""? undefined : Number(pcat)),
+          status: pstatus, image: pimg || undefined
+        }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Fel vid import");
@@ -567,75 +600,88 @@ function ImportTab() {
     }
   }
 
-  // UI state – snabbimport
-  const [sku, setSku] = useState("");
-  const [pname, setPname] = useState("");
-  const [pprice, setPprice] = useState("");
-  const [pstock, setPstock] = useState<number | "">("");
-  const [pcat, setPcat] = useState<number | "">("");
-  const [pstatus, setPstatus] = useState<"publish" | "draft">("publish");
-  const [pimg, setPimg] = useState("");
-
   return (
     <div className="grid lg:grid-cols-3 gap-6">
       {/* A: Prisfil */}
-      <section className={`${brand.card} p-5`}>
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
         <h2 className="text-lg font-semibold mb-1">Prisfil (Excel/CSV) → WooCommerce</h2>
         <p className="text-sm opacity-70 mb-3">
-          Format: <code>SKU, Pris, Lager, Status</code>. Filen skickas base64 och parsas server-side.
+          Matchar på <b>SKU</b>. Räknar pris = GBP × valutakurs × (1 + påslag%) och avrundar.
         </p>
+
+        {/* Beräkningsparametrar */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <div>
+            <label className="text-xs opacity-70">Valutakurs (GBP→SEK)</label>
+            <input type="number" step="0.01" className="w-full rounded-lg border px-3 py-2"
+              value={fx} onChange={e=>setFx(Number(e.target.value)||0)} />
+          </div>
+          <div>
+            <label className="text-xs opacity-70">Påslag (%)</label>
+            <input type="number" step="0.1" className="w-full rounded-lg border px-3 py-2"
+              value={markup} onChange={e=>setMarkup(Number(e.target.value)||0)} />
+          </div>
+          <div>
+            <label className="text-xs opacity-70">Avrundning</label>
+            <select className="w-full rounded-lg border px-3 py-2"
+              value={roundMode} onChange={e=>setRoundMode(e.target.value as any)}>
+              <option value="nearest">Närmaste</option>
+              <option value="up">Uppåt</option>
+              <option value="down">Nedåt</option>
+              <option value="none">Ingen</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs opacity-70">Steg (SEK)</label>
+            <select className="w-full rounded-lg border px-3 py-2"
+              value={roundStep} onChange={e=>setRoundStep(Number(e.target.value))}>
+              <option value={1}>1</option>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+            </select>
+          </div>
+        </div>
+
         <label className="block rounded-lg border px-4 py-6 text-center cursor-pointer bg-white hover:bg-slate-50 font-semibold">
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])}
-          />
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden"
+            onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])} />
           {busy ? "Bearbetar…" : "Välj fil…"}
         </label>
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} /> Publicera direkt
-          (annars draft)
-        </label>
+
+        <div className="mt-3 flex items-center gap-4 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} />
+            Publicera direkt (annars draft)
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="accent-amber-600" checked={dry} onChange={() => setDry(!dry)} />
+            Dry-run (visa bara vad som skulle ändras)
+          </label>
+        </div>
       </section>
 
       {/* B: Snabbimport (1 produkt) */}
-      <section className={`${brand.card} p-5`}>
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
         <h2 className="text-lg font-semibold mb-1">Britpart snabbimport (1 produkt)</h2>
-        <p className="text-sm opacity-70 mb-3">Fyll i fälten (SKU = Britpart part number).</p>
         <div className="grid grid-cols-2 gap-2">
-          <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="SKU (obligatorisk)" className="rounded-lg border px-3 py-2 col-span-2" />
-          <input value={pname} onChange={(e) => setPname(e.target.value)} placeholder="Namn" className="rounded-lg border px-3 py-2 col-span-2" />
-          <input value={pprice} onChange={(e) => setPprice(e.target.value)} placeholder="Pris (SEK)" className="rounded-lg border px-3 py-2" />
-          <input value={pstock as any} onChange={(e) => setPstock(e.target.value ? Number(e.target.value) : "")} placeholder="Lager" className="rounded-lg border px-3 py-2" />
-          <input value={pcat as any} onChange={(e) => setPcat(e.target.value ? Number(e.target.value) : "")} placeholder="Kategori ID" className="rounded-lg border px-3 py-2" />
-          <select value={pstatus} onChange={(e) => setPstatus(e.target.value as any)} className="rounded-lg border px-3 py-2">
+          <input value={sku} onChange={(e)=>setSku(e.target.value)} placeholder="SKU (obligatorisk)" className="rounded-lg border px-3 py-2 col-span-2" />
+          <input value={pname} onChange={(e)=>setPname(e.target.value)} placeholder="Namn" className="rounded-lg border px-3 py-2 col-span-2" />
+          <input value={pprice} onChange={(e)=>setPprice(e.target.value)} placeholder="Pris (SEK)" className="rounded-lg border px-3 py-2" />
+          <input value={pstock as any} onChange={(e)=>setPstock(e.target.value ? Number(e.target.value) : "")} placeholder="Lager" className="rounded-lg border px-3 py-2" />
+          <input value={pcat as any} onChange={(e)=>setPcat(e.target.value ? Number(e.target.value) : "")} placeholder="Kategori ID" className="rounded-lg border px-3 py-2" />
+          <select value={pstatus} onChange={(e)=>setPstatus(e.target.value as any)} className="rounded-lg border px-3 py-2">
             <option value="publish">Publicera</option>
             <option value="draft">Utkast</option>
           </select>
-          <input value={pimg} onChange={(e) => setPimg(e.target.value)} placeholder="Bild-URL (valfritt)" className="rounded-lg border px-3 py-2 col-span-2" />
+          <input value={pimg} onChange={(e)=>setPimg(e.target.value)} placeholder="Bild-URL (valfritt)" className="rounded-lg border px-3 py-2 col-span-2" />
         </div>
-        <button
-          disabled={!sku || busy}
-          onClick={() =>
-            handleImportOne({
-              sku,
-              name: pname || undefined,
-              price: pprice || undefined,
-              stock: pstock === "" ? undefined : Number(pstock),
-              categoryId: pcat === "" ? undefined : Number(pcat),
-              status: pstatus,
-              image: pimg || undefined,
-            })
-          }
-          className={`mt-3 px-4 py-2 rounded-lg font-semibold ${brand.btn.secondary} disabled:opacity-50`}
-        >
+        <button disabled={!sku || busy} onClick={handleImportOne} className="mt-3 px-4 py-2 rounded-lg border bg-white hover:bg-slate-50 font-semibold disabled:opacity-50">
           Importera nu
         </button>
       </section>
 
-      {/* C: Britpart underkategorier */}
-      <section className={`${brand.card} p-5`}>
+      {/* C: Britpart underkategorier (för import-run) */}
+      <section className="bg-white rounded-2xl shadow-sm border p-5">
         <h2 className="text-lg font-semibold mb-1">Britpart underkategorier</h2>
         <p className="text-sm opacity-70 mb-3">Välj en eller flera och kör dry-run eller import.</p>
         <div className="h-48 overflow-auto rounded-lg border p-2 bg-white">
@@ -645,9 +691,7 @@ function ImportTab() {
                 type="checkbox"
                 className="accent-amber-600"
                 checked={selectedSubs.includes(s.id)}
-                onChange={() =>
-                  setSelectedSubs((prev) => (prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]))
-                }
+                onChange={() => setSelectedSubs((prev) => prev.includes(s.id) ? prev.filter(x=>x!==s.id) : [...prev, s.id])}
               />
               <span className="truncate">{s.name}</span>
               <span className="ml-auto text-xs opacity-60">#{s.id}</span>
@@ -655,20 +699,18 @@ function ImportTab() {
           ))}
         </div>
         <div className="mt-3 flex items-center gap-2">
-          <button disabled={busy} onClick={() => {}} className="px-4 py-2 rounded-lg border bg-white hover:bg-slate-50 font-semibold">
-            Dry-run
-          </button>
-          <button disabled={busy} onClick={() => {}} className={`px-4 py-2 rounded-lg font-semibold ${brand.btn.primary}`}>
-            Kör import
-          </button>
+          <button disabled className="px-4 py-2 rounded-lg border bg-white text-slate-400">Dry-run</button>
+          <button disabled className="px-4 py-2 rounded-lg text-white bg-slate-900 hover:bg-slate-800">Kör import</button>
         </div>
       </section>
 
       {/* D: Logg */}
-      <section className={`lg:col-span-3 ${brand.card} p-5`}>
+      <section className="lg:col-span-3 bg-white rounded-2xl shadow-sm border p-5">
         <h2 className="text-lg font-semibold mb-2">Logg</h2>
         <div className="h-64 overflow-auto rounded-lg border bg-slate-50 p-3 text-sm font-mono leading-relaxed">
-          {log.length === 0 ? <div className="text-slate-400">Inga händelser ännu.</div> : <ul className="space-y-1">{log.map((l, i) => <li key={i}>{l}</li>)}</ul>}
+          {log.length===0 ? <div className="text-slate-400">Inga händelser ännu.</div> : (
+            <ul className="space-y-1">{log.map((l,i)=><li key={i}>{l}</li>)}</ul>
+          )}
         </div>
       </section>
     </div>
