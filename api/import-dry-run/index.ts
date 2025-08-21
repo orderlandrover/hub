@@ -14,30 +14,25 @@ app.http("import-dry-run", {
       if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
         return { status: 400, jsonBody: { error: "subcategoryIds required" } };
       }
-
       const create: any[] = [];
       const update: any[] = [];
       const skip: any[] = [];
       const perSub: Array<{ subcategory: string; count: number }> = [];
-
       for (const sid of subcategoryIds) {
-        // hämta första sidan – utöka med loop om du vill
-        const res = await britpartGetAll({ subcategory: sid, pagesize });
+        // Fix: Byt 'subcategory' till 'subcategoryId', sätt page=1 för dry-run (ingen pagesize i API)
+        const res = await britpartGetAll({ subcategoryId: sid, page: 1 });
         const data = await res.json();
         const items: any[] =
           Array.isArray(data) ? data :
           Array.isArray(data?.items) ? data.items :
           Array.isArray(data?.data) ? data.data :
           [];
-
         perSub.push({ subcategory: sid, count: items.length });
-
         // jämför med WC på SKU
         for (const row of items) {
           const sku = readPartNumber(row);
           const name = readDescription(row) || sku;
           if (!sku) continue;
-
           let existing: any = null;
           try {
             const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
@@ -46,7 +41,6 @@ app.http("import-dry-run", {
           } catch {
             // Om WC-fel – räkna hellre som "create"-kandidat än att stoppa allt
           }
-
           if (!existing) {
             create.push({ sku, name, source: "britpart", subcategory: sid });
           } else {
@@ -55,7 +49,6 @@ app.http("import-dry-run", {
           }
         }
       }
-
       return {
         jsonBody: {
           create,

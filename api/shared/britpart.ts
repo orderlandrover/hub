@@ -23,3 +23,11 @@ export async function britpartGetAll(opts: { page?: number; subcategoryId?: stri
   u.searchParams.set("page", String(opts.page ?? 1));
   return fetchJson(u);
 }
+
+export function readPartNumber(item: any): string | null {
+  return item?.code || null;  // SKU från Britpart API (per GetAll-schema)
+}
+
+export function readDescription(item: any): string | null {
+  return item?.title || item?.subText || null;  // Titel eller subText som beskrivning
+}
