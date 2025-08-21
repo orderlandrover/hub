@@ -8,9 +8,11 @@
     "start": "func start --javascript"
   },
   "dependencies": {
-    "@azure/functions": "^4.4.0"
+    "@azure/functions": "^4.4.0",
+    "csv-parse": "^5.5.0"
   },
   "devDependencies": {
+    "@types/csv-parse": "^1.2.5",
     "typescript": "^5.5.4"
   }
 }
