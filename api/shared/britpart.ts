@@ -10,6 +10,8 @@ async function fetchJson(u: URL) {
   return res.json();
 }
 
+export const britpart = fetchJson;  // Lägg till denna export för probe
+
 export async function britpartGetCategories() {
   const u = new URL(`${base()}/part/getcategories`);
   u.searchParams.set("token", env.BRITPART_TOKEN);
