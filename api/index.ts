@@ -15,6 +15,7 @@ import "./wc-categories";
 import "./products-update-bulk";   
 import "./products-delete-bulk";   
 import "./britpart-getall";
-import "./import-dry-run";  // ✅ NY
+import "./import-dry-run";  
 import "./import-one";
 import "./import-run";
+import "./price-upload";  // ✅ NY
