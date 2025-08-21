@@ -1,47 +1,73 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartGetCategories } from "../shared/britpart";
+import { britpartFetch } from "../shared/britpart";
 
-type Body = { subcategoryIds?: string[] };
+type DryBody = { subcategoryIds?: (string | number)[] };
+
+type BPPart = { code: string; categoryIds?: number[] };
+type BPList = { total: number; totalPages: number; page: number; parts: BPPart[] };
+
+async function readJsonSafe(res: Response): Promise<{ json: any; text: string }> {
+  const text = await res.text();
+  try { return { json: text ? JSON.parse(text) : null, text }; }
+  catch { return { json: null, text }; }
+}
+
+async function* iterBritpartAll(): AsyncGenerator<BPPart[], void, unknown> {
+  let page = 1;
+  for (;;) {
+    const res = await britpartFetch("/part/getall", { page });
+    const { json } = await readJsonSafe(res);
+    if (!res.ok || !json || !Array.isArray(json.parts)) return;
+    yield json.parts as BPPart[];
+    if (page >= Number(json.totalPages || 1)) return;
+    page++;
+  }
+}
 
 app.http("import-dry-run", {
   route: "import-dry-run",
-  methods: ["POST", "OPTIONS"],
+  methods: ["POST", "GET", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     const cors = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     };
     if (req.method === "OPTIONS") return { status: 200, headers: cors };
+    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: cors };
 
     try {
-      const body = (await req.json()) as Body;
-      const ids = Array.isArray(body?.subcategoryIds) ? body!.subcategoryIds! : [];
-      if (!ids.length) return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: cors };
+      const { subcategoryIds = [] } = (await req.json()) as DryBody;
+      if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
+        return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: cors };
+      }
+      const wanted = new Set(
+        subcategoryIds.map((v) => Number(String(v).trim())).filter((n) => Number.isFinite(n))
+      );
 
-      const details: Array<{ id: string; parts: number }> = [];
-      let totalParts = 0;
+      let scanned = 0, matched = 0;
+      const example: string[] = [];
 
-      for (const sid of ids) {
-        const cat = await britpartGetCategories(Number(sid));
-        const parts = Array.isArray(cat?.partCodes) ? cat.partCodes.length : 0;
-        details.push({ id: String(sid), parts });
-        totalParts += parts;
+      for await (const parts of iterBritpartAll()) {
+        for (const p of parts) {
+          scanned++;
+          const cats = (p.categoryIds || []).map(Number);
+          const hit = cats.some((c) => wanted.has(c));
+          if (hit) {
+            matched++;
+            if (example.length < 10) example.push(p.code);
+          }
+        }
       }
 
-      // Grov uppskattning: säg att 70% behöver uppdateras, 20% skapas, 10% hoppas över.
-      const summary = {
-        totalParts,
-        update: Math.round(totalParts * 0.7),
-        create: Math.round(totalParts * 0.2),
-        skip: totalParts - Math.round(totalParts * 0.7) - Math.round(totalParts * 0.2),
+      return {
+        status: 200,
+        jsonBody: { ok: true, summary: { scanned, matched }, example },
+        headers: cors,
       };
-
-      return { status: 200, jsonBody: { ok: true, details, summary }, headers: cors };
     } catch (e: any) {
-      ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message || "import-dry-run failed" }, headers: cors };
+      return { status: 500, jsonBody: { error: e?.message || "import-dry-run failed" }, headers: cors };
     }
-  }
+  },
 });
