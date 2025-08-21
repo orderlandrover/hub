@@ -10,6 +10,10 @@
     "@azure/functions": "^4.4.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
-  }
+    "typescript": "^5.5.0",
+    "@types/xlsx": "^0.0.36"
+  },
+  "engines": {
+    "node": "18"
+ }
 }
