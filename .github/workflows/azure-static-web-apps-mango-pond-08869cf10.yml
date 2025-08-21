@@ -13,36 +13,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Bygg frontend (Vite) -> dist/
-      - name: Use Node 20
-        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          submodules: true
+          lfs: false
 
-      - name: Install & build frontend
-        run: |
-          npm ci
-          npm run build
-
-      # Deploya Static Web App + Azure Functions (api/)
-      - name: Deploy app + api
+      - name: Build & Deploy
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: upload
-          app_location: dist          # färdigbyggd artefakt
-          skip_app_build: true        # byggd ovan
-          api_location: api           # din Functions-mapp
+          app_location: "/"          # frontenden ligger i repo-roten
+          output_location: "dist"    # Vite-output
+          api_location: "api"        # Functions-mappen
+          app_build_command: "npm ci && npm run build"
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
-      - name: Close PR environment
+      - name: Close PR env
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: close
-          app_location: dist
-          api_location: api
