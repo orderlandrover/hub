@@ -2,47 +2,42 @@ name: Azure Static Web Apps CI/CD
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
+    name: Build and Deploy Job
     steps:
       - uses: actions/checkout@v4
-
-      # Bygg frontend
-      - name: Setup Node
-        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Install & build frontend
-        run: |
-          npm ci
-          npm run build
-
-      # Deploya SWA + Functions
-      - name: Deploy Static Web App
+          submodules: true
+          lfs: false
+      - name: Build And Deploy
+        id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
-          action: 'upload'
-          app_location: 'dist'     # Vite-byggets output
-          skip_app_build: true     # vi bygger frontend här ovan
-          api_location: 'api'      # TypeScript Functions – byggs av Oryx
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/"  // React root
+          api_location: "api"  // Fix: Sätt till "api" för att deploya Functions
+          output_location: "dist"  // Vite-build
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    name: Close Pull Request Job
     steps:
-      - name: Close PR env
+      - name: Close Pull Request
+        id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
-          action: 'close'
-          app_location: 'dist'   # krävs av actionens schema
-          api_location: 'api'
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: "close"

@@ -18,24 +18,26 @@ app.http("products-list", {
       const per_page = parseInt(url.searchParams.get("per_page") || "100", 10);
       const source = url.searchParams.get("source") || ""; // t.ex. "britpart" för filtrering efter import
 
-      // Validering för pagination (undvik timeouts vid stora Britpart-imports)
-      if (page < 1 || per_page < 1 || per_page > 100) {
-        return { status: 400, jsonBody: { error: "Invalid page or per_page (max 100)" } };
+      // Validering för att undvika timeouts vid stora Britpart-imports
+      if (isNaN(page) || page < 1 || isNaN(per_page) || per_page < 1 || per_page > 100) {
+        return { status: 400, jsonBody: { error: "Invalid page or per_page (1-100)" } };
       }
 
       const qs = new URLSearchParams({ per_page: per_page.toString(), page: page.toString(), order, orderby });
       if (status && status !== "any") qs.set("status", status);
       if (search) qs.set("search", search);
       if (category) qs.set("category", category);
-      if (source) qs.set("meta_key", "source"); // Filtrera på meta för Britpart-produkter
+      if (source) qs.set("meta_key", "source"); // Meta-filter för Britpart-produkter
       if (source) qs.set("meta_value", source);
 
       const res = await wcRequest(`/products?${qs.toString()}`);
+      if (!res.ok) throw new Error(`WooCommerce error: ${res.status} - ${await res.text()}`);
+
       const items = await res.json();
       const total = Number(res.headers.get("x-wp-total") || items.length);
       const pages = Number(res.headers.get("x-wp-totalpages") || 1);
 
-      // Lägg till CORS-headers i response för att fixa dashboard-fel
+      // Lägg till CORS-headers för att fixa dashboard-fel (frontend-fetch från hub-domänen)
       return { 
         jsonBody: { items, total, pages, page },
         headers: {
