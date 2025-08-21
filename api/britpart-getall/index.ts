@@ -1,4 +1,5 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { assertEnv } from "../shared/env";
 import { britpartGetAll } from "../shared/britpart";
 
 app.http("britpart-getall", {
@@ -6,11 +7,11 @@ app.http("britpart-getall", {
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      const u = new URL(req.url);
-      const subcategoryId = u.searchParams.get("subcategoryId") || "";
-      const page = Number(u.searchParams.get("page") || "1");
-      if (!subcategoryId) return { status: 400, jsonBody: { error: "subcategoryId required" } };
-      const data = await britpartGetAll(subcategoryId, page);
+      assertEnv("BRITPART_BASE", "BRITPART_TOKEN");
+      const url = new URL(req.url);
+      const subcategoryId = url.searchParams.get("subcategoryId") || undefined;
+      const page = Number(url.searchParams.get("page") || "1");
+      const data = await britpartGetAll({ subcategoryId, page });
       return { jsonBody: data };
     } catch (e: any) {
       ctx.error(e);

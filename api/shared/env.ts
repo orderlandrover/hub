@@ -1,22 +1,16 @@
-// api/shared/env.ts
 export const env = {
-  BRITPART_BASE: process.env.BRITPART_BASE as string,
-  BRITPART_TOKEN: process.env.BRITPART_TOKEN as string,
-  WP_URL: process.env.WP_URL as string,
-  WC_KEY: process.env.WC_KEY as string,
-  WC_SECRET: process.env.WC_SECRET as string,
+  BRITPART_BASE: process.env.BRITPART_BASE ?? "",
+  BRITPART_TOKEN: process.env.BRITPART_TOKEN ?? "",
+  WC_KEY: process.env.WC_KEY ?? "",
+  WC_SECRET: process.env.WC_SECRET ?? "",
+  WP_URL: process.env.WP_URL ?? "", // om du inte använder WC just nu kan denna vara tom
 };
 
-/**
- * Validera att nödvändiga App Settings finns.
- * - Utan argument: kolla ALLA.
- * - Med argument: kolla bara de angivna nycklarna.
- */
+// Kan anropas utan argument (kolla alla) eller med lista av nycklar.
 export function assertEnv(...keys: (keyof typeof env)[]) {
   const toCheck = keys.length ? keys : (Object.keys(env) as (keyof typeof env)[]);
   for (const k of toCheck) {
-    if (!env[k] || String(env[k]).trim() === "") {
-      throw new Error(`Missing App Setting: ${k}`);
-    }
+    const v = env[k];
+    if (!v) throw new Error(`Missing App Setting: ${k}`);
   }
 }

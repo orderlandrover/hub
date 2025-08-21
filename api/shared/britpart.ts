@@ -1,43 +1,25 @@
-// Använder EXAKT samma app settings: BRITPART_BASE och BRITPART_TOKEN
-type Params = Record<string, string | number | undefined>;
+import { env } from "./env";
 
-const BASE = (process.env.BRITPART_BASE || "").replace(/\/$/, "");
-const TOKEN = process.env.BRITPART_TOKEN || "";
-
-function requireEnv() {
-  if (!BASE) throw new Error("Saknar App Setting: BRITPART_BASE");
-  if (!TOKEN) throw new Error("Saknar App Setting: BRITPART_TOKEN");
+function base() {
+  return env.BRITPART_BASE.replace(/\/$/, "");
 }
 
-function buildUrl(path: string, params: Params = {}) {
-  requireEnv();
-
-  // Om BASE redan pekar på en *full* endpoint (…/part/getcategories eller …/part/getall),
-  // plocka ut prefixet fram till /part så att vi kan byta mellan getcategories/getall.
-  const hasFull = /\/part\/(getall|getcategories)(?:$|\?)/i.test(BASE);
-  const prefix = hasFull ? BASE.replace(/\/part\/(getall|getcategories).*$/i, "") : BASE;
-
-  const rel = path.startsWith("/") ? path : `/${path}`;
-  const url = new URL(`${prefix}${rel}`);
-
-  // token krävs alltid
-  url.searchParams.set("token", TOKEN);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
-  }
-  return url.toString();
+async function fetchJson(u: URL) {
+  const res = await fetch(u.toString(), { headers: { "Content-Type": "application/json" } });
+  if (!res.ok) throw new Error(`Britpart ${res.status} ${res.statusText}: ${await res.text()}`);
+  return res.json();
 }
 
 export async function britpartGetCategories() {
-  const url = buildUrl("/part/getcategories");
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Britpart getcategories ${res.status}: ${await res.text()}`);
-  return res.json();
+  const u = new URL(`${base()}/part/getcategories`);
+  u.searchParams.set("token", env.BRITPART_TOKEN);
+  return fetchJson(u);
 }
 
-export async function britpartGetAll(subcategoryId: string, page = 1) {
-  const url = buildUrl("/part/getall", { subcategoryId, page });
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${await res.text()}`);
-  return res.json();
+export async function britpartGetAll(opts: { page?: number; subcategoryId?: string }) {
+  const u = new URL(`${base()}/part/getall`);
+  u.searchParams.set("token", env.BRITPART_TOKEN);
+  if (opts.subcategoryId) u.searchParams.set("subcategoryId", opts.subcategoryId);
+  u.searchParams.set("page", String(opts.page ?? 1));
+  return fetchJson(u);
 }
