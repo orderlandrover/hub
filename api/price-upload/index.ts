@@ -1,6 +1,6 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { parse } from "csv-parse/sync";
-import { wcFetch } from "../shared/wc";
+import { wcFetch, wcFetchWithOverride } from "../shared/wc";
 
 type PriceRowRaw = Record<string, string>;
 
@@ -47,7 +47,7 @@ function getGBP(row: Record<string, string>): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Försök parsa JSON; returnera [obj|null, råtext] */
+/** Läs JSON säkert; returnera även råtext om inte JSON */
 async function readJsonSafe(res: Response): Promise<{ json: any | null; text: string }> {
   const text = await res.text();
   try {
@@ -86,14 +86,13 @@ app.http("price-upload", {
       const publish = !!body.publish;
       const dryRun = !!body.dryRun;
 
-      // Base64 -> text (UTF‑8 med fallback latin1)
+      // Base64 -> CSV‑text (UTF‑8, fallback latin1)
       const buf = Buffer.from(body.base64, "base64");
       let csvText = buf.toString("utf8");
       if ((csvText.match(/\uFFFD/g) || []).length > 10) csvText = buf.toString("latin1");
 
       const delimiter = detectDelimiter(csvText);
 
-      // Parse CSV robust
       const tmp = parse(csvText, {
         delimiter,
         bom: true,
@@ -106,10 +105,7 @@ app.http("price-upload", {
 
       const rows = tmp.filter((r) => Object.values(r).some((v) => String(v || "").trim().length));
 
-      let updated = 0,
-        skipped = 0,
-        notFound = 0,
-        badRows = 0;
+      let updated = 0, skipped = 0, notFound = 0, badRows = 0;
       const errors: Array<{ sku?: string; error: string }> = [];
       const sample = { updates: [] as any[], errors: [] as any[] };
 
@@ -118,15 +114,12 @@ app.http("price-upload", {
         try {
           const sku = getSKU(raw);
           const priceGBP = getGBP(raw);
-          if (!sku || !priceGBP) {
-            skipped++;
-            continue;
-          }
+          if (!sku || !priceGBP) { skipped++; continue; }
 
           const priceSEK = roundToStep(priceGBP * fx * (1 + markupPct / 100), step, roundMode);
           const priceStr = priceSEK.toFixed(2);
 
-          // Woo: hitta produkt (tålig mot text/HTML-fel)
+          // 1) Hitta produkt
           const resFind = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
           const { json: findJson, text: findText } = await readJsonSafe(resFind);
           if (!resFind.ok) {
@@ -142,18 +135,21 @@ app.http("price-upload", {
           }
 
           const product = findJson[0];
-          const id = product.id;
+          const id: number = product.id;
 
+          // 2) Dry‑run?
           if (dryRun) {
             updated++;
             if (sample.updates.length < 5) sample.updates.push({ id, sku, from: product.regular_price, to: priceStr });
             continue;
           }
 
+          // 3) Bygg payload innan PUT
           const payload: any = { regular_price: priceStr };
           if (publish) payload.status = "publish";
 
-          const resUpd = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          // 4) Uppdatera (med override‑fallback)
+          const resUpd = await wcFetchWithOverride(`/products/${id}`, "PUT", payload);
           const { json: updJson, text: updText } = await readJsonSafe(resUpd);
           if (!resUpd.ok) {
             errors.push({ sku, error: `Woo PUT ${resUpd.status}: ${updText.slice(0, 180)}` });
