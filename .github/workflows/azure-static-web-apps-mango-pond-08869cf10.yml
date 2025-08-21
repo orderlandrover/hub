@@ -2,42 +2,47 @@ name: Azure Static Web Apps CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
-    name: Build and Deploy Job
     steps:
       - uses: actions/checkout@v4
+
+      # Bygg frontend (Vite) -> dist/
+      - name: Use Node 20
+        uses: actions/setup-node@v4
         with:
-          submodules: true
-          lfs: false
-      - name: Build And Deploy
-        id: builddeploy
+          node-version: 20
+
+      - name: Install & build frontend
+        run: |
+          npm ci
+          npm run build
+
+      # Deploya Static Web App + Azure Functions (api/)
+      - name: Deploy app + api
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: "upload"
-          app_location: "/"  // React root
-          api_location: "api"  // Fix: Sätt till "api" för att deploya Functions
-          output_location: "dist"  // Vite-build
+          action: upload
+          app_location: dist          # färdigbyggd artefakt
+          skip_app_build: true        # byggd ovan
+          api_location: api           # din Functions-mapp
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
-    name: Close Pull Request Job
     steps:
-      - name: Close Pull Request
-        id: closepullrequest
+      - name: Close PR environment
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          action: "close"
+          action: close
+          app_location: dist
+          api_location: api
