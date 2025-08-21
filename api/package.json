@@ -1,19 +1,14 @@
 {
-  "name": "landroverdelar-api",
-  "version": "0.1.0",
+  "name": "hub-api",
   "private": true,
   "type": "commonjs",
-  "scripts": {
-    "build": "tsc -p ."
-  },
   "dependencies": {
     "@azure/functions": "^4.4.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/xlsx": "^0.0.36"
+    "typescript": "^5.5.0"
   },
-  "engines": {
-    "node": "18"
- }
+  "scripts": {
+    "build": "tsc -p ."
+  }
 }
