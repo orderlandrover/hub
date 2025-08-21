@@ -2,13 +2,15 @@
   "name": "hub-api",
   "private": true,
   "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "func start --javascript"
+  },
   "dependencies": {
     "@azure/functions": "^4.4.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
-  },
-  "scripts": {
-    "build": "tsc -p ."
+    "typescript": "^5.5.4"
   }
 }

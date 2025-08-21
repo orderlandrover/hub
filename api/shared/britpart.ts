@@ -1,35 +1,40 @@
 import { env } from "./env";
 
-function base() {
-  return env.BRITPART_BASE.replace(/\/$/, "");
+export async function britpartFetch(
+  path: string,
+  params: Record<string, any> = {},
+  tokenOverride?: string
+) {
+  const base = env("BRITPART_BASE");
+  const token = tokenOverride || env("BRITPART_TOKEN");
+
+  const url = new URL(base.replace(/\/$/, "") + "/api/v1" + path);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  });
+  if (token) url.searchParams.set("token", token);
+
+  return fetch(url.toString(), {
+    headers: { "Accept": "application/json" },
+  });
 }
 
-async function fetchJson(u: URL) {
-  const res = await fetch(u.toString(), { headers: { "Content-Type": "application/json" } });
-  if (!res.ok) throw new Error(`Britpart ${res.status} ${res.statusText}: ${await res.text()}`);
-  return res.json();
+export async function britpartGetAll(params: {
+  page?: number;
+  code?: string;
+  modifiedSince?: string;
+  subcategoryId?: number;   // 👈 nu stöds subcategoryId
+}, tokenOverride?: string) {
+  return britpartFetch("/part/getall", params, tokenOverride);
 }
 
-export const britpart = fetchJson;  // Lägg till denna export för probe
-
-export async function britpartGetCategories() {
-  const u = new URL(`${base()}/part/getcategories`);
-  u.searchParams.set("token", env.BRITPART_TOKEN);
-  return fetchJson(u);
-}
-
-export async function britpartGetAll(opts: { page?: number; subcategoryId?: string }) {
-  const u = new URL(`${base()}/part/getall`);
-  u.searchParams.set("token", env.BRITPART_TOKEN);
-  if (opts.subcategoryId) u.searchParams.set("subcategoryId", opts.subcategoryId);
-  u.searchParams.set("page", String(opts.page ?? 1));
-  return fetchJson(u);
-}
-
-export function readPartNumber(item: any): string | null {
-  return item?.code || null;  // SKU från Britpart API (per GetAll-schema)
-}
-
-export function readDescription(item: any): string | null {
-  return item?.title || item?.subText || null;  // Titel eller subText som beskrivning
+export async function britpartGetCategories(
+  categoryId?: number,
+  tokenOverride?: string
+) {
+  return britpartFetch(
+    "/part/getcategories",
+    { categoryId },
+    tokenOverride
+  );
 }

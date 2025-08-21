@@ -1,8 +1,14 @@
-import "./products-list";
-import "./products-update";
-import "./products-delete";     // <-- lägg till denna
-import "./wc-categories";
+// api/index.ts
+import "./ping";
+import "./britpart-products";
+import "./britpart-categories";
+import "./britpart-getall";
 import "./britpart-subcategories";
+import "./britpart-probe";
+import "./import-one";
 import "./import-dry-run";
 import "./import-run";
-// import "./ping";              // valfritt
+import "./products-list";
+import "./products-update";
+import "./products-delete";
+import "./wc-categories";

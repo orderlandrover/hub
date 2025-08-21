@@ -1,7 +1,9 @@
-import { app, HttpResponseInit } from "@azure/functions";
+// api/ping/index.ts
+import { app } from "@azure/functions";
+
 app.http("ping", {
+  route: "ping",
   methods: ["GET"],
   authLevel: "anonymous",
-  handler: async (): Promise<HttpResponseInit> =>
-    ({ jsonBody: { ok: true, t: Date.now() } }),
+  handler: async () => ({ status: 200, jsonBody: { ok: true, ts: Date.now() } }),
 });

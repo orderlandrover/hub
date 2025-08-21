@@ -1,60 +1,46 @@
+// api/britpart-products/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { britpartFetch } from "../shared/britpart";
+import { assertEnv } from "../shared/env";
 
-const BASE = process.env.BRITPART_API_BASE || "";      // ex: https://www.britpart.com/api/v1/part/getall
-const API_KEY = process.env.BRITPART_API_KEY || "";    // om nyckel krävs
-
-function headers() {
-  const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (API_KEY) {
-    // testa det som funkar hos er – ofta Bearer, ibland x-api-key
-    h.Authorization = `Bearer ${API_KEY}`;
-    h["x-api-key"] = API_KEY;
-  }
-  return h;
-}
+type PartsResponse = {
+  total: number;
+  totalPages: number;
+  page: number;
+  parts: any[];
+};
 
 app.http("britpart-products", {
+  route: "britpart-products",   // => /api/britpart-products
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      if (!BASE) return { status: 500, jsonBody: { error: "Missing BRITPART_API_BASE" } };
-
-      const res = await fetch(BASE, { headers: headers() });
-      if (!res.ok) {
-        return { status: res.status, jsonBody: { error: await res.text() } };
-      }
-
-      const all = await res.json(); // antas vara en lista med delar/produkter
+      assertEnv("BRITPART_API_BASE"); // token får vara tom om du skickar via query
       const url = new URL(req.url);
-      const subId = url.searchParams.get("subcategoryId");
 
-      // robust extraktion av fält
-      const norm = (Array.isArray(all) ? all : []).map((p: any) => ({
-        // försök olika vanliga fältnamn
-        partNumber: p.partNumber ?? p.sku ?? p.code ?? p.part_code ?? "",
-        description: p.description ?? p.name ?? p.title ?? "",
-        price: p.price ?? p.retailPrice ?? p.listPrice ?? null,
-        stockQty: p.stockQty ?? p.stock ?? p.quantity ?? null,
-        image: (p.imageUrls?.[0]) ?? p.image ?? p.image_url ?? null,
-        subcategoryIds: p.subcategoryIds ?? p.subCategories ?? p.categoryIds ?? [],
-        raw: p,
-      }));
+      const page = Number(url.searchParams.get("page") || 1);
+      const code = url.searchParams.get("code") || undefined;
+      const modifiedSince = url.searchParams.get("modifiedSince") || undefined;
+      const tokenOverride = url.searchParams.get("token") || undefined;
 
-      let items = norm;
-      if (subId) {
-        const idNum = Number(subId);
-        items = norm.filter(p =>
-          Array.isArray(p.subcategoryIds) &&
-          p.subcategoryIds.some((x: any) => Number(x) === idNum)
-        );
-      }
+      const res = await britpartFetch("/part/getall", { page, code, modifiedSince }, tokenOverride);
+      const text = await res.text();
+      if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text}`);
 
-      // begränsa storleken i svaret
-      return { jsonBody: { count: items.length, items: items.slice(0, 200) } };
+      const data = JSON.parse(text) as Partial<PartsResponse>;
+
+      const out: PartsResponse = {
+        total: Number(data.total ?? (Array.isArray(data.parts) ? data.parts.length : 0)),
+        totalPages: Number(data.totalPages ?? 1),
+        page: Number(data.page ?? page),
+        parts: Array.isArray(data.parts) ? data.parts : [],
+      };
+
+      return { status: 200, jsonBody: out };
     } catch (e: any) {
       ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message } };
+      return { status: 500, jsonBody: { error: e.message ?? "britpart-products failed" } };
     }
   },
 });
