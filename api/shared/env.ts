@@ -10,7 +10,7 @@ export function env(name: string, required = true): string {
 // Kolla flera env samtidigt. Om keys utelämnas => kolla alla nedan.
 export function assertEnv(...keys: string[]) {
   const all = {
-    BRITPART_API_BASE: process.env.BRITPART_API_BASE ?? "",
+    BRITPART_BASE: process.env.BRITPART_BASE ?? "",
     BRITPART_TOKEN: process.env.BRITPART_TOKEN ?? "",
   };
 

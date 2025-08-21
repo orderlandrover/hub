@@ -1,11 +1,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartFetch } from "../shared/britpart";
+import { env } from "../shared/env";
 
-type BpCategory = {
-  id: number;
-  title: string;
-  subcategories?: BpCategory[];
-};
+type BpCategory = { id: number; title: string; subcategories?: BpCategory[] };
 
 app.http("britpart-subcategories", {
   route: "britpart-subcategories",
@@ -19,23 +15,39 @@ app.http("britpart-subcategories", {
     };
 
     try {
-      const url = new URL(req.url);
-      const categoryId = Number(url.searchParams.get("categoryId") || 3);
-      const tokenOverride = url.searchParams.get("token") || undefined;
+      // Läs env + query override
+      const base = (env("BRITPART_BASE") || "https://www.britpart.com").replace(/\/$/, "");
+      const token = (new URL(req.url).searchParams.get("token")) || env("BRITPART_TOKEN", false) || "";
+      const categoryId = Number(new URL(req.url).searchParams.get("categoryId") || 3);
 
-      const res = await britpartFetch("/part/getcategories", { categoryId }, tokenOverride);
+      const url = new URL(`${base}/api/v1/part/getcategories`);
+      url.searchParams.set("categoryId", String(categoryId));
+      if (token) url.searchParams.set("token", token);
+
+      const headers = new Headers({ Accept: "application/json" });
+      if (token) headers.set("Token", token);
+
+      const res = await fetch(url.toString(), { headers });
       const text = await res.text();
 
       if (!res.ok) {
-        // Britpart har förmodligen svarat med HTML-sida → gör det tydligt för frontend
-        throw new Error(`Britpart getcategories ${res.status}: ${text?.slice(0, 200)}`);
+        // Skicka tillbaka status + ett kort utdrag (hjälper felsökning i UI)
+        return {
+          status: 502,
+          jsonBody: {
+            error: `Britpart getcategories ${res.status}`,
+            url: `${url.origin}${url.pathname}?categoryId=${categoryId}&token=${token ? "***" : ""}`,
+            snippet: text.slice(0, 200),
+          },
+          headers: cors,
+        };
       }
 
       let data: BpCategory;
       try {
         data = JSON.parse(text);
       } catch {
-        throw new Error(`Invalid JSON from Britpart (len=${text.length}). First bytes: ${text.slice(0, 50)}`);
+        return { status: 502, jsonBody: { error: "Invalid JSON from Britpart", snippet: text.slice(0, 200) }, headers: cors };
       }
 
       const subs = Array.isArray(data?.subcategories) ? data.subcategories : [];
@@ -46,5 +58,5 @@ app.http("britpart-subcategories", {
       ctx.error(e);
       return { status: 500, jsonBody: { error: e.message || "britpart-subcategories failed" }, headers: cors };
     }
-  }
+  },
 });

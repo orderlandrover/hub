@@ -12,5 +12,9 @@ import "./products-list";
 import "./products-update";        // (per-ID PUT, om du redan har den)
 import "./products-delete";        // (per-ID DELETE, om du redan har den)
 import "./wc-categories";
-import "./products-update-bulk";   // ✅ NY
-import "./products-delete-bulk";   // ✅ NY
+import "./products-update-bulk";   
+import "./products-delete-bulk";   
+import "./britpart-getall";
+import "./import-dry-run";  // ✅ NY
+import "./import-one";
+import "./import-run";

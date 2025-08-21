@@ -3,7 +3,7 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "BRITPART_API_BASE": "https://www.britpart.com/api/v1",
+    "BRITPART_BASE": "https://www.britpart.com/",
     "BRITPART_TOKEN": "6ecb3841-8a18-4144-93dc-a69a1617eefd"
   }
 }
