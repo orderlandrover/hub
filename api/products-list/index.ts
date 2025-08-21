@@ -9,29 +9,52 @@ app.http("products-list", {
     try {
       assertEnv();
       const url = new URL(req.url);
-
-      const page = url.searchParams.get("page") || "1";
+      const page = parseInt(url.searchParams.get("page") || "1", 10);
       const status = url.searchParams.get("status") || ""; // tom = alla
       const search = url.searchParams.get("search") || "";
       const category = url.searchParams.get("category") || "";
       const orderby = url.searchParams.get("orderby") || "title";
       const order = url.searchParams.get("order") || "asc";
-      const per_page = url.searchParams.get("per_page") || "100";
+      const per_page = parseInt(url.searchParams.get("per_page") || "100", 10);
+      const source = url.searchParams.get("source") || ""; // t.ex. "britpart" för filtrering efter import
 
-      const qs = new URLSearchParams({ per_page, page, order, orderby });
+      // Validering för pagination (undvik timeouts vid stora Britpart-imports)
+      if (page < 1 || per_page < 1 || per_page > 100) {
+        return { status: 400, jsonBody: { error: "Invalid page or per_page (max 100)" } };
+      }
+
+      const qs = new URLSearchParams({ per_page: per_page.toString(), page: page.toString(), order, orderby });
       if (status && status !== "any") qs.set("status", status);
       if (search) qs.set("search", search);
       if (category) qs.set("category", category);
+      if (source) qs.set("meta_key", "source"); // Filtrera på meta för Britpart-produkter
+      if (source) qs.set("meta_value", source);
 
       const res = await wcRequest(`/products?${qs.toString()}`);
       const items = await res.json();
       const total = Number(res.headers.get("x-wp-total") || items.length);
       const pages = Number(res.headers.get("x-wp-totalpages") || 1);
 
-      return { jsonBody: { items, total, pages, page: Number(page) } };
+      // Lägg till CORS-headers i response för att fixa dashboard-fel
+      return { 
+        jsonBody: { items, total, pages, page },
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type"
+        }
+      };
     } catch (e: any) {
       ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message } };
+      return { 
+        status: 500, 
+        jsonBody: { error: e.message || "Error fetching products from WooCommerce" },
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type"
+        }
+      };
     }
   },
 });
