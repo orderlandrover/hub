@@ -1,53 +1,66 @@
+// api/shared/britpart.ts
 import { env } from "./env";
 
-/**
- * Bygger korrekt GET ALL-URL:
- *   {BASE}/api/v1/part/getall?token=...&subcategory=...&pagesize=...&page=...
- * Token skickas BÅDE som query och i headern “Token” (enligt Britparts svar).
- */
-function buildGetAllUrl(params: { subcategory?: string; pagesize?: number; page?: number }) {
-  const base = env.BRITPART_BASE.replace(/\/$/, "");
-  const url = new URL(`${base}/api/v1/part/getall`);
-  url.searchParams.set("token", env.BRITPART_TOKEN);
-  if (params.subcategory) url.searchParams.set("subcategory", params.subcategory);
-  if (params.pagesize) url.searchParams.set("pagesize", String(params.pagesize));
-  if (params.page) url.searchParams.set("page", String(params.page));
-  return url.toString();
+/** Bygger URL utifrån BRITPART_BASE (som i Azure), utan att ändra namnet. */
+function buildUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = (env.BRITPART_BASE || "").replace(/\/$/, "");
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${p}`;
 }
 
-/** Rått anrop till Britpart GetAll */
-export async function britpartGetAll(params: { subcategory?: string; pagesize?: number; page?: number }) {
-  const url = buildGetAllUrl(params);
-  const res = await fetch(url, { headers: { Token: env.BRITPART_TOKEN } });
+/** Liten klient som funkar oavsett om gateway vill ha Bearer eller x-api-key. */
+export async function britpart(path: string, init: RequestInit = {}) {
+  const url = buildUrl(path);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    // vanligast:
+    Authorization: `Bearer ${env.BRITPART_TOKEN}`,
+    // alternativ som vissa gateways kräver:
+    "x-api-key": env.BRITPART_TOKEN,
+    "X-API-KEY": env.BRITPART_TOKEN,
+    ...(init.headers as any),
+  };
+
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text}`);
+    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text.slice(0, 1000)}`);
   }
   return res;
 }
 
-/** Plocka ut artikelnummer från olika fältvarianter (“PartNo”, “Part No”, “partNumber”, …) */
-export function readPartNumber(row: any): string {
-  if (!row || typeof row !== "object") return "";
-  const candidates = ["PartNo", "Part No", "PartNumber", "partnumber", "partNo", "part_no", "Code", "Part"];
-  for (const k of Object.keys(row)) {
-    if (candidates.some((c) => c.toLowerCase() === String(k).toLowerCase())) {
-      const v = String(row[k] ?? "").trim();
-      if (v) return v;
-    }
-  }
-  return "";
+/* ------- Typer (tillräckligt breda för att undvika TS-fel) ------- */
+export type BPCategory = {
+  id?: string | number;
+  code?: string;
+  name?: string;
+  description?: string;
+  subcategories?: BPSubcat[];
+};
+
+export type BPSubcat = {
+  id?: string | number;
+  code?: string;
+  name?: string;
+  description?: string;
+  /** vissa flöden vill lista partkoder under subkategori */
+  partCodes?: string[];
+};
+
+/* ------- Högre nivå -------- */
+
+/** Hämtar kategoriträdet (GetCategories) */
+export async function britpartGetCategories() {
+  const res = await britpart("/part/getcategories");
+  return res.json(); // schema kommer från Britpart, vi skickar vidare rakt av
 }
 
-/** Plocka beskrivning */
-export function readDescription(row: any): string {
-  if (!row || typeof row !== "object") return "";
-  const candidates = ["Description", "Desc", "LongDescription", "longDescription"];
-  for (const k of Object.keys(row)) {
-    if (candidates.some((c) => c.toLowerCase() === String(k).toLowerCase())) {
-      const v = String(row[k] ?? "").trim();
-      if (v) return v;
-    }
-  }
-  return "";
+/** Hämtar en sida från GetAll. Querystring skickas vidare oförändrad. */
+export async function britpartGetAll(search: string) {
+  const path =
+    "/part/getall" + (search ? (search.startsWith("?") ? search : `?${search}`) : "");
+  const res = await britpart(path);
+  return res.json();
 }
