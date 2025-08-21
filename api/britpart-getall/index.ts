@@ -1,6 +1,4 @@
-// api/britpart-getall/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { assertEnv } from "../shared/env";
 import { britpartGetAll } from "../shared/britpart";
 
 app.http("britpart-getall", {
@@ -8,10 +6,11 @@ app.http("britpart-getall", {
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      assertEnv("BRITPART_BASE", "BRITPART_TOKEN");
-      const url = new URL(req.url);
-      // Skicka vidare exakt samma query (så du kan använda de parameternamn deras docs säger)
-      const data = await britpartGetAll(url.search);
+      const u = new URL(req.url);
+      const subcategoryId = u.searchParams.get("subcategoryId") || "";
+      const page = Number(u.searchParams.get("page") || "1");
+      if (!subcategoryId) return { status: 400, jsonBody: { error: "subcategoryId required" } };
+      const data = await britpartGetAll(subcategoryId, page);
       return { jsonBody: data };
     } catch (e: any) {
       ctx.error(e);

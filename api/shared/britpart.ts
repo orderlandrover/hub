@@ -1,66 +1,43 @@
-// api/shared/britpart.ts
-import { env } from "./env";
+// Använder EXAKT samma app settings: BRITPART_BASE och BRITPART_TOKEN
+type Params = Record<string, string | number | undefined>;
 
-/** Bygger URL utifrån BRITPART_BASE (som i Azure), utan att ändra namnet. */
-function buildUrl(path: string) {
-  if (/^https?:\/\//i.test(path)) return path;
-  const base = (env.BRITPART_BASE || "").replace(/\/$/, "");
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${p}`;
+const BASE = (process.env.BRITPART_BASE || "").replace(/\/$/, "");
+const TOKEN = process.env.BRITPART_TOKEN || "";
+
+function requireEnv() {
+  if (!BASE) throw new Error("Saknar App Setting: BRITPART_BASE");
+  if (!TOKEN) throw new Error("Saknar App Setting: BRITPART_TOKEN");
 }
 
-/** Liten klient som funkar oavsett om gateway vill ha Bearer eller x-api-key. */
-export async function britpart(path: string, init: RequestInit = {}) {
-  const url = buildUrl(path);
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    // vanligast:
-    Authorization: `Bearer ${env.BRITPART_TOKEN}`,
-    // alternativ som vissa gateways kräver:
-    "x-api-key": env.BRITPART_TOKEN,
-    "X-API-KEY": env.BRITPART_TOKEN,
-    ...(init.headers as any),
-  };
+function buildUrl(path: string, params: Params = {}) {
+  requireEnv();
 
-  const res = await fetch(url, { ...init, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text.slice(0, 1000)}`);
+  // Om BASE redan pekar på en *full* endpoint (…/part/getcategories eller …/part/getall),
+  // plocka ut prefixet fram till /part så att vi kan byta mellan getcategories/getall.
+  const hasFull = /\/part\/(getall|getcategories)(?:$|\?)/i.test(BASE);
+  const prefix = hasFull ? BASE.replace(/\/part\/(getall|getcategories).*$/i, "") : BASE;
+
+  const rel = path.startsWith("/") ? path : `/${path}`;
+  const url = new URL(`${prefix}${rel}`);
+
+  // token krävs alltid
+  url.searchParams.set("token", TOKEN);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
-  return res;
+  return url.toString();
 }
 
-/* ------- Typer (tillräckligt breda för att undvika TS-fel) ------- */
-export type BPCategory = {
-  id?: string | number;
-  code?: string;
-  name?: string;
-  description?: string;
-  subcategories?: BPSubcat[];
-};
-
-export type BPSubcat = {
-  id?: string | number;
-  code?: string;
-  name?: string;
-  description?: string;
-  /** vissa flöden vill lista partkoder under subkategori */
-  partCodes?: string[];
-};
-
-/* ------- Högre nivå -------- */
-
-/** Hämtar kategoriträdet (GetCategories) */
 export async function britpartGetCategories() {
-  const res = await britpart("/part/getcategories");
-  return res.json(); // schema kommer från Britpart, vi skickar vidare rakt av
+  const url = buildUrl("/part/getcategories");
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Britpart getcategories ${res.status}: ${await res.text()}`);
+  return res.json();
 }
 
-/** Hämtar en sida från GetAll. Querystring skickas vidare oförändrad. */
-export async function britpartGetAll(search: string) {
-  const path =
-    "/part/getall" + (search ? (search.startsWith("?") ? search : `?${search}`) : "");
-  const res = await britpart(path);
+export async function britpartGetAll(subcategoryId: string, page = 1) {
+  const url = buildUrl("/part/getall", { subcategoryId, page });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${await res.text()}`);
   return res.json();
 }
