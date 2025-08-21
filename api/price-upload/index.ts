@@ -47,6 +47,16 @@ function getGBP(row: Record<string, string>): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Försök parsa JSON; returnera [obj|null, råtext] */
+async function readJsonSafe(res: Response): Promise<{ json: any | null; text: string }> {
+  const text = await res.text();
+  try {
+    return { json: text ? JSON.parse(text) : null, text };
+  } catch {
+    return { json: null, text };
+  }
+}
+
 app.http("price-upload", {
   route: "price-upload",
   methods: ["GET", "POST", "OPTIONS"],
@@ -69,7 +79,6 @@ app.http("price-upload", {
       const fx = Number(body.fx ?? 13.0);
       const markupPct = Number(body.markupPct ?? 0);
       const step = Number(body.step ?? 1);
-      // ✅ Gör roundMode garanterat definierad (fixar TS-2345)
       const roundMode: "near" | "up" | "down" | "none" =
         (["near", "up", "down", "none"] as const).includes((body.roundMode as any) ?? "near")
           ? ((body.roundMode as "near" | "up" | "down" | "none") ?? "near")
@@ -117,16 +126,22 @@ app.http("price-upload", {
           const priceSEK = roundToStep(priceGBP * fx * (1 + markupPct / 100), step, roundMode);
           const priceStr = priceSEK.toFixed(2);
 
-          // Woo: hitta produkt
+          // Woo: hitta produkt (tålig mot text/HTML-fel)
           const resFind = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
-          const list = await resFind.json();
-          if (!Array.isArray(list) || list.length === 0) {
+          const { json: findJson, text: findText } = await readJsonSafe(resFind);
+          if (!resFind.ok) {
+            throw new Error(`Woo /products?sku HTTP ${resFind.status}: ${findText.slice(0, 180)}`);
+          }
+          if (!Array.isArray(findJson)) {
+            throw new Error(`Woo /products?sku unexpected payload: ${findText.slice(0, 180)}`);
+          }
+          if (findJson.length === 0) {
             notFound++;
             if (sample.errors.length < 5) sample.errors.push({ sku, reason: "not found" });
             continue;
           }
 
-          const product = list[0];
+          const product = findJson[0];
           const id = product.id;
 
           if (dryRun) {
@@ -139,17 +154,19 @@ app.http("price-upload", {
           if (publish) payload.status = "publish";
 
           const resUpd = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-          if (resUpd.ok) {
-            updated++;
-            if (sample.updates.length < 5) sample.updates.push({ id, sku, to: priceStr });
-          } else {
-            const msg = await resUpd.text();
-            errors.push({ sku, error: msg || "update failed" });
-            if (sample.errors.length < 5) sample.errors.push({ sku, error: msg || "update failed" });
+          const { json: updJson, text: updText } = await readJsonSafe(resUpd);
+          if (!resUpd.ok) {
+            errors.push({ sku, error: `Woo PUT ${resUpd.status}: ${updText.slice(0, 180)}` });
+            if (sample.errors.length < 5) sample.errors.push({ sku, error: `PUT ${resUpd.status}` });
+            continue;
           }
+
+          updated++;
+          if (sample.updates.length < 5) sample.updates.push({ id: updJson?.id ?? id, sku, to: priceStr });
         } catch (e: any) {
           badRows++;
-          if (sample.errors.length < 5) sample.errors.push({ row: i + 1, error: e?.message || String(e) });
+          const msg = e?.message || String(e);
+          if (sample.errors.length < 5) sample.errors.push({ row: i + 1, error: msg });
         }
       }
 
