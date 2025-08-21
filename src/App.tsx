@@ -18,6 +18,26 @@ type ListResponse = { items: WCProduct[]; total: number; pages: number; page: nu
 type WCCategory = { id: number; name: string; parent: number };
 type RoundModeUI = "nearest" | "up" | "down" | "none";
 
+/* ---------- Normaliserare (gör UI:et robust mot varierande svar) ---------- */
+function normalizeList(raw: any): { items: WCProduct[]; total: number; pages: number; page: number } {
+  if (Array.isArray(raw)) {
+    return { items: raw as WCProduct[], total: (raw as any[]).length, pages: 1, page: 1 };
+  }
+  const items: WCProduct[] =
+    Array.isArray(raw?.items) ? raw.items :
+    Array.isArray(raw?.parts) ? raw.parts : [];
+  const total = Number(raw?.total ?? items.length ?? 0);
+  const pages = Number(raw?.pages ?? raw?.totalPages ?? 1);
+  const page  = Number(raw?.page ?? 1);
+  return { items, total, pages, page };
+}
+
+function normalizeCategories(raw: any): WCCategory[] {
+  if (Array.isArray(raw)) return raw as WCCategory[];
+  if (Array.isArray(raw?.items)) return raw.items as WCCategory[];
+  return [];
+}
+
 /* ---------- Helper: stabil base64 (utan spread/rekursion) ---------- */
 async function fileToBase64(file: File): Promise<string> {
   return await new Promise((resolve, reject) => {
@@ -105,6 +125,7 @@ function ProductsTab() {
 
   const canPrev = page > 1;
   const canNext = page < (data.pages || 1);
+  const items = data?.items ?? [];
 
   async function load(
     over?: Partial<{
@@ -144,8 +165,8 @@ function ProductsTab() {
 
       const res = await fetch(`/api/products-list?${q.toString()}`, { signal: ctrl.signal });
       if (!res.ok) throw new Error(await res.text());
-      const json = (await res.json()) as ListResponse;
-      setData(json);
+      const json = await res.json();
+      setData(normalizeList(json));
       setSelected([]);
     } catch (e: any) {
       if (e?.name !== "AbortError") setErr(e?.message || "Något gick fel");
@@ -158,8 +179,8 @@ function ProductsTab() {
     try {
       const res = await fetch("/api/wc-categories");
       if (!res.ok) throw new Error(await res.text());
-      const json = (await res.json()) as { items: WCCategory[] };
-      setCats(json.items || []);
+      const json = await res.json();
+      setCats(normalizeCategories(json));
     } catch (e: any) {
       console.error(e);
     }
@@ -179,9 +200,7 @@ function ProductsTab() {
   }
   function toggleAllOnPage() {
     setSelected((s) =>
-      s.length === data.items.length && data.items.length > 0
-        ? []
-        : data.items.map((p) => p.id)
+      s.length === items.length && items.length > 0 ? [] : items.map((p) => p.id)
     );
   }
 
@@ -432,7 +451,7 @@ function ProductsTab() {
                 <input
                   type="checkbox"
                   onChange={toggleAllOnPage}
-                  checked={data.items.length > 0 && selected.length === data.items.length}
+                  checked={items.length > 0 && selected.length === items.length}
                 />
               </th>
               <th>Produkt</th>
@@ -452,7 +471,7 @@ function ProductsTab() {
                 </td>
               </tr>
             )}
-            {!loading && data.items.length === 0 && (
+            {!loading && items.length === 0 && (
               <tr>
                 <td colSpan={8} className="p-6 text-center">
                   Inga produkter
@@ -460,7 +479,7 @@ function ProductsTab() {
               </tr>
             )}
             {!loading &&
-              data.items.map((p) => (
+              items.map((p) => (
                 <tr key={p.id} className="border-t align-middle">
                   <td className="p-3">
                     <input
