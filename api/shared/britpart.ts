@@ -1,42 +1,32 @@
 import { env } from "./env";
 
-function buildUrl(params: Record<string, any> = {}) {
-  // env.BRITPART_API_BASE ska vara exakt .../api/v1/part/getall
-  const base = env.BRITPART_API_BASE.replace(/\/$/, "");
-  const url = new URL(base);
-
-  const q = new URLSearchParams(url.search);
-  if (env.BRITPART_API_KEY) q.set("token", env.BRITPART_API_KEY);
-
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null || v === "") continue;
-    q.set(k, String(v));
-  }
-  url.search = q.toString();
-  return url.toString();
+/** Grund-URL, t.ex. https://www.britpart.com/api/v1/part/getall */
+function base(): string {
+  const b = (process.env.BRITPART_BASE || env.BRITPART_API_BASE || "").trim();
+  if (!b) throw new Error("Missing App Setting: BRITPART_BASE");
+  return b.replace(/\/$/, "");
 }
 
-/** Rå-respons från Britpart getall */
-export async function britpartGetAll(params: Record<string, any> = {}) {
-  const url = buildUrl(params);
+/** GET /parts med Token-header + ?token=... (Britparts krav) */
+export async function britpartGetAll(query: Record<string, any> = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  }
+  if (process.env.BRITPART_TOKEN) qs.set("token", String(process.env.BRITPART_TOKEN));
+
+  const url = `${base()}/parts?${qs.toString()}`;
   const res = await fetch(url, {
-    // vissa installationer accepterar även denna header:
-    headers: { Token: env.BRITPART_API_KEY || "" },
+    headers: {
+      "Content-Type": "application/json",
+      // Britpart accepterar även Token-headern:
+      ...(process.env.BRITPART_TOKEN ? { Token: String(process.env.BRITPART_TOKEN) } : {}),
+    },
   });
+
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Britpart ${res.status} ${res.statusText}: ${txt}`);
+    const text = await res.text();
+    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text}`);
   }
   return res;
-}
-
-/** JSON-helper med tydligt fel om svaret inte är JSON */
-export async function britpartGetAllJSON<T = any>(params: Record<string, any> = {}) {
-  const res = await britpartGetAll(params);
-  const txt = await res.text();
-  try {
-    return JSON.parse(txt) as T;
-  } catch {
-    throw new Error(`Britpart-svaret var inte JSON: ${txt.slice(0, 400)}…`);
-  }
 }
