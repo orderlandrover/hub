@@ -2,31 +2,17 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import { parse } from "csv-parse/sync";
 import { wcFetch } from "../shared/wc";
 
-type PriceRow = {
-  "Part No": string;
-  "Description": string;
-  "Price": string;
-  "Per"?: string;
-  "UOI"?: string;
-  "Brand"?: string;
-  "LR Retail"?: string;
-  "Weight"?: string;
-  "Length"?: string;
-  "Width"?: string;
-  "Thickness"?: string;
-  "C of O"?: string;
-  "EEC Commodity Code"?: string;
-};
+type PriceRowRaw = Record<string, string>;
 
 type UploadBody = {
   filename: string;
-  base64: string;         // CSV som base64 (från din UI)
-  fx?: number;            // GBP -> SEK
+  base64: string;         // CSV i base64 (från UI)
+  fx?: number;            // GBP->SEK
   markupPct?: number;     // påslag i %
   roundMode?: "near" | "up" | "down" | "none";
-  step?: number;          // avrundningssteg i SEK
-  publish?: boolean;      // publicera direkt
-  dryRun?: boolean;       // kör utan att uppdatera Woo
+  step?: number;          // avrundning (SEK)
+  publish?: boolean;
+  dryRun?: boolean;
 };
 
 function roundToStep(v: number, step: number, mode: "near" | "up" | "down" | "none"): number {
@@ -37,68 +23,103 @@ function roundToStep(v: number, step: number, mode: "near" | "up" | "down" | "no
   return Math.floor(m) * step;
 }
 
+function detectDelimiter(text: string): string {
+  const first = text.split(/\r?\n/).slice(0, 3).join("\n");
+  const counts = {
+    ",": (first.match(/,/g) || []).length,
+    ";": (first.match(/;/g) || []).length,
+    "\t": (first.match(/\t/g) || []).length,
+  };
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best && best[1] > 0 ? best[0] : ",";
+}
+
+function normalizeHeader(h: string): string {
+  return h.replace(/\uFEFF/g, "").replace(/\s+/g, " ").trim();
+}
+
+function getSKU(row: Record<string, string>): string {
+  return (row["Part No"] || row["PartNo"] || row["SKU"] || "").trim();
+}
+function getGBP(row: Record<string, string>): number {
+  const s = (row["Price"] ?? row["GBP"] ?? row["RRP"] ?? "").toString().replace(",", ".").trim();
+  const n = Number.parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
 app.http("price-upload", {
   route: "price-upload",
-  methods: ["POST", "OPTIONS"],
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     const cors = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     };
     if (req.method === "OPTIONS") return { status: 200, headers: cors };
+    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "price-upload" }, headers: cors };
 
     try {
       const body = (await req.json()) as UploadBody;
-
       if (!body?.base64) {
         return { status: 400, jsonBody: { error: "Missing base64 CSV" }, headers: cors };
       }
 
-      // Parametrar
       const fx = Number(body.fx ?? 13.0);
       const markupPct = Number(body.markupPct ?? 0);
       const step = Number(body.step ?? 1);
-      const roundMode = (body.roundMode as UploadBody["roundMode"]) ?? "near";
+      // ✅ Gör roundMode garanterat definierad (fixar TS-2345)
+      const roundMode: "near" | "up" | "down" | "none" =
+        (["near", "up", "down", "none"] as const).includes((body.roundMode as any) ?? "near")
+          ? ((body.roundMode as "near" | "up" | "down" | "none") ?? "near")
+          : "near";
       const publish = !!body.publish;
       const dryRun = !!body.dryRun;
 
-      // Decode base64 -> text CSV
-      let csvText = "";
-      try {
-        csvText = Buffer.from(body.base64, "base64").toString("utf-8");
-      } catch (e) {
-        return { status: 400, jsonBody: { error: "Invalid base64 input" }, headers: cors };
-      }
+      // Base64 -> text (UTF‑8 med fallback latin1)
+      const buf = Buffer.from(body.base64, "base64");
+      let csvText = buf.toString("utf8");
+      if ((csvText.match(/\uFFFD/g) || []).length > 10) csvText = buf.toString("latin1");
 
-      // Parse CSV (med rad-typ)
-      const rows = parse(csvText, { columns: true, skip_empty_lines: true }) as PriceRow[];
+      const delimiter = detectDelimiter(csvText);
 
-      // Summering
-      let updated = 0;
-      let skipped = 0;
-      let notFound = 0;
+      // Parse CSV robust
+      const tmp = parse(csvText, {
+        delimiter,
+        bom: true,
+        columns: (headers: string[]) => headers.map(normalizeHeader),
+        skip_empty_lines: true,
+        relax_column_count: true,
+        relax_quotes: true,
+        trim: true,
+      }) as PriceRowRaw[];
+
+      const rows = tmp.filter((r) => Object.values(r).some((v) => String(v || "").trim().length));
+
+      let updated = 0,
+        skipped = 0,
+        notFound = 0,
+        badRows = 0;
       const errors: Array<{ sku?: string; error: string }> = [];
       const sample = { updates: [] as any[], errors: [] as any[] };
 
-      for (const row of rows) {
+      for (let i = 0; i < rows.length; i++) {
+        const raw = rows[i] || {};
         try {
-          const sku = (row["Part No"] || "").trim();
-          const priceGBP = Number.parseFloat(row["Price"] || "0");
-          if (!sku || !priceGBP || !Number.isFinite(priceGBP)) {
+          const sku = getSKU(raw);
+          const priceGBP = getGBP(raw);
+          if (!sku || !priceGBP) {
             skipped++;
             continue;
           }
 
-          // Beräkna SEK
-          const raw = priceGBP * fx * (1 + markupPct / 100);
-          const priceSEK = roundToStep(raw, step, roundMode);
+          const priceSEK = roundToStep(priceGBP * fx * (1 + markupPct / 100), step, roundMode);
           const priceStr = priceSEK.toFixed(2);
 
-          // Hitta produkten på SKU
-          const r = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
-          const list = await r.json();
+          // Woo: hitta produkt
+          const resFind = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
+          const list = await resFind.json();
           if (!Array.isArray(list) || list.length === 0) {
             notFound++;
             if (sample.errors.length < 5) sample.errors.push({ sku, reason: "not found" });
@@ -109,35 +130,26 @@ app.http("price-upload", {
           const id = product.id;
 
           if (dryRun) {
-            updated++; // räknas som “skulle uppdateras”
-            if (sample.updates.length < 5) {
-              sample.updates.push({ id, sku, from: product.regular_price, to: priceStr });
-            }
+            updated++;
+            if (sample.updates.length < 5) sample.updates.push({ id, sku, from: product.regular_price, to: priceStr });
             continue;
           }
 
-          // Uppdatera Woo pris + ev. status
           const payload: any = { regular_price: priceStr };
           if (publish) payload.status = "publish";
 
-          const upd = await wcFetch(`/products/${id}`, {
-            method: "PUT",
-            body: JSON.stringify(payload),
-          });
-
-          if (upd.ok) {
+          const resUpd = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          if (resUpd.ok) {
             updated++;
-            if (sample.updates.length < 5) {
-              sample.updates.push({ id, sku, to: priceStr });
-            }
+            if (sample.updates.length < 5) sample.updates.push({ id, sku, to: priceStr });
           } else {
-            const msg = await upd.text();
+            const msg = await resUpd.text();
             errors.push({ sku, error: msg || "update failed" });
-            if (sample.errors.length < 5) sample.errors.push({ sku, error: msg });
+            if (sample.errors.length < 5) sample.errors.push({ sku, error: msg || "update failed" });
           }
-        } catch (err: any) {
-          errors.push({ error: err?.message || String(err) });
-          if (sample.errors.length < 5) sample.errors.push({ error: err?.message || String(err) });
+        } catch (e: any) {
+          badRows++;
+          if (sample.errors.length < 5) sample.errors.push({ row: i + 1, error: e?.message || String(e) });
         }
       }
 
@@ -149,6 +161,7 @@ app.http("price-upload", {
           updated,
           skipped,
           notFound,
+          badRows,
           errors: errors.length,
           sample,
         },
