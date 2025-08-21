@@ -9,45 +9,53 @@ app.http("import-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = (await req.json()) as { subcategoryIds: string[]; limit?: number; categoryId?: number };
-      const { subcategoryIds = [], limit = 3, categoryId } = body || {};
+      const body = (await req.json()) as { subcategoryIds: string[]; categoryId?: number; pagesize?: number };
+      const { subcategoryIds = [], categoryId, pagesize = 50 } = body || {};
       if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
         return { status: 400, jsonBody: { error: "subcategoryIds required" } };
       }
 
-      let created = 0, updated = 0;
+      let created = 0;
+      let updated = 0;
       const errors: Array<{ sku: string; error: string }> = [];
 
       for (const sid of subcategoryIds) {
-        const res = await britpartGetAll({ subcategory: sid, pagesize: Math.max(10, limit * 2) });
+        const res = await britpartGetAll({ subcategory: sid, pagesize });
         const data = await res.json();
-        const items: any[] = data?.items || data?.data || data || [];
+        const items: any[] =
+          Array.isArray(data) ? data :
+          Array.isArray(data?.items) ? data.items :
+          Array.isArray(data?.data) ? data.data :
+          [];
 
-        for (const row of items.slice(0, limit)) {
+        for (const row of items) {
           const sku = readPartNumber(row);
           if (!sku) continue;
           const name = readDescription(row) || sku;
 
           try {
-            const check = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
-            const arr = await check.json();
+            // Finns den redan?
+            const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
+            const arr = await r.json();
+            const existing = Array.isArray(arr) ? arr[0] : null;
+
             const payload: any = {
               sku,
               name,
-              status: "draft",
+              // Vi sätter inte pris här – det kommer från månadspriset via price-upload
+              manage_stock: false,
+              ...(categoryId ? { categories: [{ id: categoryId }] } : {}),
             };
-            if (categoryId) payload.categories = [{ id: categoryId }];
 
-            if (Array.isArray(arr) && arr.length > 0) {
-              const id = arr[0].id;
-              await wcRequest(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-              updated++;
-            } else {
+            if (!existing) {
               await wcRequest(`/products`, { method: "POST", body: JSON.stringify(payload) });
               created++;
+            } else {
+              await wcRequest(`/products/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) });
+              updated++;
             }
           } catch (err: any) {
-            errors.push({ sku, error: String(err?.message || err) });
+            errors.push({ sku, error: err?.message || String(err) });
           }
         }
       }

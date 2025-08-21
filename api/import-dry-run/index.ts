@@ -1,6 +1,6 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { assertEnv } from "../shared/env";
-import { britpartGetAll, readPartNumber } from "../shared/britpart";
+import { britpartGetAll, readPartNumber, readDescription } from "../shared/britpart";
 import { wcRequest } from "../shared/wc";
 
 app.http("import-dry-run", {
@@ -9,40 +9,60 @@ app.http("import-dry-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = (await req.json()) as { subcategoryIds: string[]; limit?: number };
-      const { subcategoryIds = [], limit = 3 } = body || {};
+      const body = (await req.json()) as { subcategoryIds: string[]; pagesize?: number };
+      const { subcategoryIds = [], pagesize = 50 } = body || {};
       if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
         return { status: 400, jsonBody: { error: "subcategoryIds required" } };
       }
 
-      let create = 0, update = 0, skip = 0;
+      const create: any[] = [];
+      const update: any[] = [];
+      const skip: any[] = [];
       const perSub: Array<{ subcategory: string; count: number }> = [];
 
       for (const sid of subcategoryIds) {
-        const res = await britpartGetAll({ subcategory: sid, pagesize: Math.max(10, limit * 2) });
+        // hämta första sidan – utöka med loop om du vill
+        const res = await britpartGetAll({ subcategory: sid, pagesize });
         const data = await res.json();
-        const items: any[] = data?.items || data?.data || data || [];
-        const slice = items.slice(0, limit); // bara de första N för test
+        const items: any[] =
+          Array.isArray(data) ? data :
+          Array.isArray(data?.items) ? data.items :
+          Array.isArray(data?.data) ? data.data :
+          [];
 
-        let cnt = 0;
-        for (const row of slice) {
+        perSub.push({ subcategory: sid, count: items.length });
+
+        // jämför med WC på SKU
+        for (const row of items) {
           const sku = readPartNumber(row);
+          const name = readDescription(row) || sku;
           if (!sku) continue;
-          cnt++;
 
-          // Finns i WC?
-          const wc = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
-          const arr = await wc.json();
-          if (Array.isArray(arr) && arr.length > 0) update++;
-          else create++;
+          let existing: any = null;
+          try {
+            const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
+            const arr = await r.json();
+            existing = Array.isArray(arr) ? arr[0] : null;
+          } catch {
+            // Om WC-fel – räkna hellre som "create"-kandidat än att stoppa allt
+          }
+
+          if (!existing) {
+            create.push({ sku, name, source: "britpart", subcategory: sid });
+          } else {
+            // här kan du göra en diff av fält om du vill – nu markerar vi som “skip” (inget att ändra)
+            skip.push({ id: existing.id, sku });
+          }
         }
-        perSub.push({ subcategory: sid, count: cnt });
       }
 
       return {
         jsonBody: {
-          summary: { create, update, skip },
-          perSub,
+          create,
+          update,
+          skip,
+          summary: { create: create.length, update: update.length, skip: skip.length },
+          perSub
         },
       };
     } catch (e: any) {

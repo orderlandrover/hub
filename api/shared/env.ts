@@ -5,15 +5,13 @@ export const env = {
   WC_SECRET: process.env.WC_SECRET as string,
 
   // Britpart
-  BRITPART_TOKEN: process.env.BRITPART_TOKEN as string, // <— tokenen
-  BRITPART_API_BASE: process.env.BRITPART_API_BASE as string | undefined, // valfri bas
-  BRITPART_GETALL_URL: process.env.BRITPART_GETALL_URL as string | undefined, // ex: https://www.britpart.com/api/v1/part/getall
-  BRITPART_GETCATEGORIES_URL: process.env.BRITPART_GETCATEGORIES_URL as string | undefined, // ex: https://www.britpart.com/api/v1/part/getall/categories
+  BRITPART_TOKEN: process.env.BRITPART_TOKEN as string,
+  // Bas-URL utan efterföljande / – vi bygger hela sökvägen i helpers nedan
+  BRITPART_BASE: (process.env.BRITPART_BASE as string) || "https://www.britpart.com",
 };
 
 export function assertEnv() {
-  const required = ["WP_URL", "WC_KEY", "WC_SECRET", "BRITPART_TOKEN"];
-  for (const k of required) {
-    if (!((env as any)[k])) throw new Error(`Missing App Setting: ${k}`);
+  for (const [k, v] of Object.entries(env)) {
+    if (!v) throw new Error(`Missing App Setting: ${k}`);
   }
 }

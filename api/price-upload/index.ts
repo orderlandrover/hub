@@ -28,9 +28,9 @@ function pickRow(v: any): Row | null {
   if (!v || typeof v !== "object") return null;
   const keys = Object.keys(v).map((k) => String(k).trim());
 
-  const skuKey = keys.find((k) =>
-    /^(sku|part\s*no\.?|part\s*number|partno|part_number|code|artikel|artnr)$/i.test(k)
-  );
+  const skuKey = keys.find(k =>
+  /^(sku|part(\s*number)?|part\s*no|partno|code|artikel|artnr)$/i.test(String(k).trim())
+);
   const priceKey = keys.find((k) =>
     /^(price|pris|gbp|price\s*\(gbp\)|pris\s*\(gbp\))$/i.test(k)
   );
