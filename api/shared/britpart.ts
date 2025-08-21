@@ -1,27 +1,71 @@
-import { InvocationContext } from "@azure/functions";
+import { env } from "./env";
 
-// Base fetch-helper för Britpart API (använd HTTPS, lägg till token från env)
-export async function britpart(path: string, params: Record<string, any> = {}, ctx?: InvocationContext) {
-  const token = process.env.BRITPART_API_TOKEN;
-  if (!token) {
-    throw new Error("BRITPART_API_TOKEN missing in env");
-  }
-  const searchParams = new URLSearchParams({ token, ...params });
-  const url = `https://www.britpart.com/api/v1${path}?${searchParams.toString()}`;
-  const res = await fetch(url);
+/** Bygger en URL mot GetAll/ GetCategories och lägger på token som query */
+function withToken(u: URL) {
+  if (env.BRITPART_TOKEN) u.searchParams.set("token", env.BRITPART_TOKEN);
+  return u;
+}
+
+/** Anropar Britpart och sätter även "Token" header för säkerhets skull */
+async function bfetch(input: string | URL, init: RequestInit = {}) {
+  const url = typeof input === "string" ? new URL(input) : input;
+  const res = await fetch(url.toString(), {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Token: env.BRITPART_TOKEN || "",
+      "Content-Type": "application/json",
+    },
+  });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Britpart API error: ${res.status} - ${text}`);
+    throw new Error(`Britpart ${res.status} ${res.statusText}: ${text}`);
   }
   return res;
 }
 
-// För GetAll (hämta produkter paginerat eller per code)
-export async function britpartGetAll(params: { code?: string; page?: number; modifiedSince?: string } = {}, ctx?: InvocationContext) {
-  return britpart('/part/getall', params, ctx);
+/** GetAll – produkter (stödjer subcategory + limit för test) */
+export async function britpartGetAll(opts: { subcategory?: string; page?: number; pagesize?: number; q?: string }) {
+  const base =
+    env.BRITPART_GETALL_URL ||
+    `${(env.BRITPART_API_BASE || "https://www.britpart.com/api/v1").replace(/\/$/, "")}/part/getall`;
+  const u = withToken(new URL(base));
+  if (opts.subcategory) u.searchParams.set("subcategory", opts.subcategory);
+  if (opts.page) u.searchParams.set("page", String(opts.page));
+  if (opts.pagesize) u.searchParams.set("pagesize", String(opts.pagesize));
+  if (opts.q) u.searchParams.set("q", opts.q);
+  return bfetch(u);
 }
 
-// För GetCategories (hämta kategorier och sub med partCodes)
-export async function britpartGetCategories(params: { categoryId?: string } = {}, ctx?: InvocationContext) {
-  return britpart('/part/getcategories', params, ctx);
+/** GetCategories – huvud/underkategorier */
+export async function britpartGetCategories() {
+  const base =
+    env.BRITPART_GETCATEGORIES_URL ||
+    `${(env.BRITPART_API_BASE || "https://www.britpart.com/api/v1").replace(/\/$/, "")}/part/getall/categories`;
+  const u = withToken(new URL(base));
+  return bfetch(u);
+}
+
+/** Hjälpare för olika fältnamn i svaret */
+export function readPartNumber(row: any): string {
+  return (
+    row?.partNumber ||
+    row?.part_no ||
+    row?.partNo ||
+    row?.PartNo ||
+    row?.["Part No"] ||
+    row?.["PartNo"] ||
+    row?.code ||
+    row?.sku ||
+    ""
+  ).toString().trim();
+}
+export function readDescription(row: any): string {
+  return (row?.description || row?.Description || row?.name || "").toString();
+}
+export function readPriceGBP(row: any): number | undefined {
+  const v = row?.price ?? row?.Price ?? row?.GBP ?? row?.gbp;
+  if (v == null) return undefined;
+  const n = Number(String(v).replace(",", ".").replace(/[^\d.-]/g, ""));
+  return isFinite(n) ? n : undefined;
 }

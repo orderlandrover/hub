@@ -1,23 +1,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { assertEnv } from "../shared/env";
+import { britpartGetAll, readPartNumber, readDescription } from "../shared/britpart";
 import { wcRequest } from "../shared/wc";
-import { britpartGetAll } from "../shared/britpart";
-
-function pickSKU(it: any): string {
-  return (
-    it?.partNumber || it?.partNo || it?.PartNo || it?.["Part No"] ||
-    it?.sku || it?.code || ""
-  ).toString().trim();
-}
-function pickName(it: any): string {
-  return (it?.description || it?.Description || it?.["Description"] || pickSKU(it)).toString().trim();
-}
-
-async function getWCBySku(sku: string) {
-  const r = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
-  const arr = await r.json();
-  return Array.isArray(arr) && arr[0] ? arr[0] : null;
-}
 
 app.http("import-run", {
   methods: ["POST"],
@@ -25,56 +9,50 @@ app.http("import-run", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       assertEnv();
-      const body = (await req.json()) as { subcategoryIds: string[]; publish?: boolean; limitPerSub?: number };
-      const { subcategoryIds = [], publish = false, limitPerSub = 3 } = body || {};
+      const body = (await req.json()) as { subcategoryIds: string[]; limit?: number; categoryId?: number };
+      const { subcategoryIds = [], limit = 3, categoryId } = body || {};
       if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
         return { status: 400, jsonBody: { error: "subcategoryIds required" } };
       }
 
-      const created: any[] = [];
-      const updated: any[] = [];
+      let created = 0, updated = 0;
       const errors: Array<{ sku: string; error: string }> = [];
 
-      for (const sub of subcategoryIds) {
-        // Hämta FÅ för test just nu
-        const r = await britpartGetAll({ subcategory: sub, top: limitPerSub });
-        const j = await r.json();
-        const items: any[] = Array.isArray(j) ? j : (j.items || j.data || []);
+      for (const sid of subcategoryIds) {
+        const res = await britpartGetAll({ subcategory: sid, pagesize: Math.max(10, limit * 2) });
+        const data = await res.json();
+        const items: any[] = data?.items || data?.data || data || [];
 
-        for (const it of items) {
-          const sku = pickSKU(it);
+        for (const row of items.slice(0, limit)) {
+          const sku = readPartNumber(row);
           if (!sku) continue;
+          const name = readDescription(row) || sku;
 
           try {
-            const existing = await getWCBySku(sku);
+            const check = await wcRequest(`/products?sku=${encodeURIComponent(sku)}`);
+            const arr = await check.json();
             const payload: any = {
               sku,
-              name: pickName(it),
-              status: publish ? "publish" : "draft",
+              name,
+              status: "draft",
             };
+            if (categoryId) payload.categories = [{ id: categoryId }];
 
-            if (!existing) {
-              const cr = await wcRequest(`/products`, { method: "POST", body: JSON.stringify(payload) });
-              const pj = await cr.json();
-              created.push({ id: pj.id, sku });
+            if (Array.isArray(arr) && arr.length > 0) {
+              const id = arr[0].id;
+              await wcRequest(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+              updated++;
             } else {
-              const up = await wcRequest(`/products/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) });
-              const uj = await up.json();
-              updated.push({ id: uj.id, sku });
+              await wcRequest(`/products`, { method: "POST", body: JSON.stringify(payload) });
+              created++;
             }
-          } catch (e: any) {
-            errors.push({ sku, error: e?.message || String(e) });
+          } catch (err: any) {
+            errors.push({ sku, error: String(err?.message || err) });
           }
         }
       }
 
-      return {
-        jsonBody: {
-          ok: true,
-          summary: { created: created.length, updated: updated.length, errors: errors.length },
-          sample: { created: created.slice(0, 5), updated: updated.slice(0, 5), errors: errors.slice(0, 5) },
-        },
-      };
+      return { jsonBody: { ok: true, created, updated, errors } };
     } catch (e: any) {
       ctx.error(e);
       return { status: 500, jsonBody: { error: e.message } };

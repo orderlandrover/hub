@@ -6,49 +6,41 @@ import { wcRequest } from "../shared/wc";
 type RoundMode = "near" | "up" | "down";
 type UploadBody = {
   filename: string;
-  base64: string;       // base64-innehåll (utan "data:*;base64,")
-  fx: number;           // GBP -> SEK
-  markupPct: number;    // t.ex. 25
-  roundMode?: string;   // "near" | "up" | "down" | annat -> "near"
-  step?: number;        // 1, 5, 10
+  base64: string; // utan "data:*;base64,"
+  fx: number;     // GBP -> SEK
+  markupPct: number;
+  roundMode?: string; // near|up|down
+  step?: number;      // 1,5,10
   publish?: boolean;
   dryRun?: boolean;
 };
 
 type Row = { sku: string; gbp: number };
 
-function b64ToUint8Array(b64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(b64, "base64"));
-}
-function toNumberLike(x: any): number {
-  if (x == null) return NaN;
-  const s = String(x).replace(/[^\d.,\-]/g, "").replace(",", ".");
-  const n = Number(s);
+// --- helpers ---
+const b64ToUint8 = (b64: string) => new Uint8Array(Buffer.from(b64, "base64"));
+const num = (v: any) => {
+  if (v == null) return NaN;
+  const n = Number(String(v).replace(",", ".").replace(/[^\d.-]/g, ""));
   return isFinite(n) ? n : NaN;
-}
-function pickHeaders(v: any): Row | null {
+};
+function pickRow(v: any): Row | null {
   if (!v || typeof v !== "object") return null;
-  const keys = Object.keys(v);
+  const keys = Object.keys(v).map((k) => String(k).trim());
 
-  // Britpart CSV: "Part No"  | "Price"
   const skuKey = keys.find((k) =>
-    /^(sku|part(\s*number)?|part\s*no\.?|part\s*#|code|artikel|artnr)$/i.test(String(k).trim())
+    /^(sku|part\s*no\.?|part\s*number|partno|part_number|code|artikel|artnr)$/i.test(k)
   );
   const priceKey = keys.find((k) =>
-    /^(price|pris|gbp|price.*gbp|pris.*gbp)$/i.test(String(k).trim())
+    /^(price|pris|gbp|price\s*\(gbp\)|pris\s*\(gbp\))$/i.test(k)
   );
 
-  const rawSku = skuKey ? v[skuKey] : undefined;
-  const rawPrice = priceKey ? v[priceKey] : undefined;
-
-  const sku = String(rawSku ?? "").trim();
-  const gbp = toNumberLike(rawPrice);
-
+  const sku = (skuKey ? String((v as any)[skuKey]) : "").trim();
+  const gbp = num(priceKey ? (v as any)[priceKey] : undefined);
   if (!sku || !isFinite(gbp)) return null;
   return { sku, gbp };
 }
-function roundToStep(value: number, step: number, mode: RoundMode): number {
-  if (!isFinite(value)) return value;
+function roundToStep(value: number, step: number, mode: RoundMode) {
   if (!isFinite(step) || step <= 0) return Math.round(value * 100) / 100;
   const q = value / step;
   const r = mode === "up" ? Math.ceil(q) : mode === "down" ? Math.floor(q) : Math.round(q);
@@ -76,23 +68,21 @@ app.http("price-upload", {
       const rm = String(body.roundMode || "").toLowerCase();
       const roundMode: RoundMode = rm === "up" ? "up" : rm === "down" ? "down" : "near";
 
-      // Läs xlsx/csv skonsamt
-      const u8 = b64ToUint8Array(body.base64);
+      // Läs arbetsbok (xlsx/csv)
+      const u8 = b64ToUint8(body.base64);
       let wb: XLSX.WorkBook;
       try {
         wb = XLSX.read(u8, { type: "array", raw: true });
       } catch {
-        const asText = Buffer.from(u8).toString("utf8"); // CSV fallback
-        wb = XLSX.read(asText, { type: "string", raw: true });
+        wb = XLSX.read(Buffer.from(u8).toString("utf8"), { type: "string", raw: true });
       }
       const ws = wb.Sheets[wb.SheetNames[0]];
       if (!ws) return { status: 400, jsonBody: { error: "Kunde inte läsa första arket i filen" } };
 
-      // Parsning
       const raw = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true }) as any[];
-      const parsed: Row[] = raw.map(pickHeaders).filter((x): x is Row => !!x);
+      const parsed: Row[] = raw.map(pickRow).filter((x): x is Row => !!x);
       if (parsed.length === 0) {
-        return { status: 400, jsonBody: { error: "Kunde inte tolka filen (hittade inga SKU/Price)" } };
+        return { status: 400, jsonBody: { error: "Kunde inte tolka filen (saknar 'Part No'/'Price' eller ogiltiga värden)" } };
       }
 
       const updates: any[] = [];
@@ -102,44 +92,34 @@ app.http("price-upload", {
 
       for (const r of parsed) {
         try {
-          // Hitta WC-produkt via SKU
-          let product: any = null;
-          try {
-            const resList = await wcRequest(`/products?sku=${encodeURIComponent(r.sku)}`);
-            const list = await resList.json();
-            product = Array.isArray(list) ? list[0] : null;
-          } catch (e: any) {
-            errors.push({ sku: r.sku, error: e?.message || String(e) });
-            continue;
-          }
-
-          if (!product) { notFound.push(r.sku); continue; }
+          const resList = await wcRequest(`/products?sku=${encodeURIComponent(r.sku)}`);
+          const list = await resList.json();
+          const p = Array.isArray(list) ? list[0] : null;
+          if (!p) { notFound.push(r.sku); continue; }
 
           const prelim = r.gbp * fx * (1 + markup);
           const sek = roundToStep(prelim, step, roundMode);
-          const next = Math.round(Number(sek) * 100) / 100;
-          const current = toNumberLike(product?.regular_price);
+          const next = Math.round(sek * 100) / 100;
+          const current = num(p?.regular_price);
 
           if (isFinite(current) && Math.abs(current - next) < 0.009) {
-            skipped.push({ id: product.id, sku: r.sku, price: current });
+            skipped.push({ id: p.id, sku: r.sku, price: current });
             continue;
           }
 
           if (dryRun) {
-            updates.push({ id: product.id, sku: r.sku, from: current, to: next, dryRun: true });
+            updates.push({ id: p.id, sku: r.sku, from: current, to: next, dryRun: true });
             continue;
           }
 
           const patch: any = { regular_price: String(next) };
           if (publish) patch.status = "publish";
-
-          try {
-            const resPut = await wcRequest(`/products/${product.id}`, { method: "PUT", body: JSON.stringify(patch) });
-            const saved = await resPut.json();
-            updates.push({ id: saved.id, sku: r.sku, from: current, to: next });
-          } catch (e: any) {
-            errors.push({ sku: r.sku, error: e?.message || String(e) });
-          }
+          const resPut = await wcRequest(`/products/${p.id}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+          });
+          const saved = await resPut.json();
+          updates.push({ id: saved.id, sku: r.sku, from: current, to: next });
         } catch (e: any) {
           errors.push({ sku: r.sku, error: e?.message || String(e) });
         }
