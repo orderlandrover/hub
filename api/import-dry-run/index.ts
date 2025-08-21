@@ -1,73 +1,66 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { britpartFetch } from "../shared/britpart";
 
-type DryBody = { subcategoryIds?: (string | number)[] };
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type"
+};
 
-type BPPart = { code: string; categoryIds?: number[] };
-type BPList = { total: number; totalPages: number; page: number; parts: BPPart[] };
-
-async function readJsonSafe(res: Response): Promise<{ json: any; text: string }> {
-  const text = await res.text();
-  try { return { json: text ? JSON.parse(text) : null, text }; }
-  catch { return { json: null, text }; }
-}
-
-async function* iterBritpartAll(): AsyncGenerator<BPPart[], void, unknown> {
-  let page = 1;
-  for (;;) {
-    const res = await britpartFetch("/part/getall", { page });
-    const { json } = await readJsonSafe(res);
-    if (!res.ok || !json || !Array.isArray(json.parts)) return;
-    yield json.parts as BPPart[];
-    if (page >= Number(json.totalPages || 1)) return;
-    page++;
-  }
-}
+type Body = {
+  subcategoryIds?: (string | number)[];
+  pageStart?: number;
+  maxPagesPerCall?: number;
+};
 
 app.http("import-dry-run", {
-  route: "import-dry-run",
-  methods: ["POST", "GET", "OPTIONS"],
+  route: "api/import-dry-run",
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
-    const cors = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
-    if (req.method === "OPTIONS") return { status: 200, headers: cors };
-    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: cors };
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: CORS };
 
-    try {
-      const { subcategoryIds = [] } = (await req.json()) as DryBody;
-      if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
-        return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: cors };
+    const b = (await req.json()) as Body;
+    const ids: number[] = (b?.subcategoryIds || [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isFinite(n));
+
+    if (!ids.length) {
+      return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: CORS };
+    }
+
+    let page = Math.max(1, Number(b?.pageStart ?? 1));
+    const maxPages = Math.max(1, Math.min(5, Number(b?.maxPagesPerCall ?? 2)));
+
+    let scanned = 0;
+    let matched = 0;
+    const example: string[] = [];
+
+    for (let i = 0; i < maxPages; i++) {
+      const res = await britpartFetch("/part/getall", { page });
+      const text = await res.text();
+      if (!res.ok) {
+        return { status: 500, jsonBody: { error: `Britpart getall ${res.status}: ${text.slice(0, 180)}` }, headers: CORS };
       }
-      const wanted = new Set(
-        subcategoryIds.map((v) => Number(String(v).trim())).filter((n) => Number.isFinite(n))
-      );
 
-      let scanned = 0, matched = 0;
-      const example: string[] = [];
+      const j = JSON.parse(text);
+      const parts: any[] = Array.isArray(j.parts) ? j.parts : [];
+      const totalPages = Number(j.totalPages || 1);
 
-      for await (const parts of iterBritpartAll()) {
-        for (const p of parts) {
-          scanned++;
-          const cats = (p.categoryIds || []).map(Number);
-          const hit = cats.some((c) => wanted.has(c));
-          if (hit) {
-            matched++;
-            if (example.length < 10) example.push(p.code);
-          }
+      for (const p of parts) {
+        scanned++;
+        const cats: number[] = (p.categoryIds || []).map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n));
+        if (cats.some((c: number) => ids.includes(c))) {
+          matched++;
+          if (example.length < 10) example.push(String(p.code));
         }
       }
 
-      return {
-        status: 200,
-        jsonBody: { ok: true, summary: { scanned, matched }, example },
-        headers: cors,
-      };
-    } catch (e: any) {
-      return { status: 500, jsonBody: { error: e?.message || "import-dry-run failed" }, headers: cors };
+      if (page >= totalPages) break;
+      page++;
     }
-  },
+
+    return { status: 200, jsonBody: { ok: true, summary: { scanned, matched }, example }, headers: CORS };
+  }
 });

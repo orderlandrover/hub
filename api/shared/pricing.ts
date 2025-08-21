@@ -1,21 +1,14 @@
-export type Rounding = "none" | "nearest-1" | "nearest-5" | "up-1" | "up-5";
+export type RoundMode = "near" | "up" | "down" | "none";
 
-export function roundPrice(v: number, mode: Rounding): number {
-  const n = Number(v);
-  if (!isFinite(n)) return 0;
-  const r = (m: number, f: (x:number)=>number) => f(n / m) * m;
-
-  switch (mode) {
-    case "nearest-1": return Math.round(n);
-    case "nearest-5": return r(5, Math.round);
-    case "up-1":      return Math.ceil(n);
-    case "up-5":      return r(5, Math.ceil);
-    default:          return Number(n.toFixed(2));
-  }
+export function roundToStep(v: number, step: number, mode: RoundMode) {
+  if (!step || step <= 0 || mode === "none") return v;
+  const m = v / step;
+  if (mode === "near") return Math.round(m) * step;
+  if (mode === "up")   return Math.ceil(m) * step;
+  return Math.floor(m) * step;
 }
 
-export function gbpToSek(gbp: number, fxRate: number, markupPct: number, rounding: Rounding){
-  const base = gbp * fxRate;
-  const withMarkup = base * (1 + (markupPct || 0)/100);
-  return roundPrice(withMarkup, rounding);
+export function calcSEK(gbp: number, fx: number, markupPct: number, step: number, mode: RoundMode) {
+  const raw = gbp * fx * (1 + (markupPct || 0) / 100);
+  return roundToStep(raw, step, mode);
 }

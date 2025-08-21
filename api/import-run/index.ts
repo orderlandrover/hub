@@ -1,175 +1,109 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { britpartFetch } from "../shared/britpart";
-import { wcFetch } from "../shared/wc";
+import { wcFetch, readJsonSafe } from "../shared/wc";
 
-type RunBody = {
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type"
+};
+
+type Body = {
   subcategoryIds?: (string | number)[];
-  publish?: boolean;  // default true
+  publish?: boolean;
+  pageStart?: number;
+  maxPagesPerCall?: number; // hur många Britpart-sidor per körning
 };
 
-type BPPart = {
-  code: string;
-  title?: string;
-  content?: string;        // HTML
-  subText?: string;        // HTML
-  url?: string;
-  imageUrls?: string[];
-  datePublished?: string;
-  similarParts?: string[];
-  categoryIds?: number[];
-  filterCategories?: any[];
-};
+async function upsertWoo(p: any, publish: boolean) {
+  const sku: string | undefined = p?.code;
+  if (!sku) return { created: 0, updated: 0, skipped: 1 };
 
-type BPList = {
-  total: number;
-  totalPages: number;
-  page: number;
-  parts: BPPart[];
-};
-
-async function readJsonSafe(res: Response): Promise<{ json: any; text: string }> {
-  const text = await res.text();
-  try { return { json: text ? JSON.parse(text) : null, text }; }
-  catch { return { json: null, text }; }
-}
-
-/** Hämta ALLA sidor från Britpart /part/getall (med valfri page-start) */
-async function* iterBritpartAll(ctx: InvocationContext): AsyncGenerator<BPPart[], void, unknown> {
-  let page = 1;
-  for (;;) {
-    const res = await britpartFetch("/part/getall", { page });
-    const { json, text } = await readJsonSafe(res);
-    if (!res.ok || !json || !Array.isArray(json.parts)) {
-      ctx.warn(`britpart getall page=${page} HTTP ${res.status} ${text.slice(0,180)}`);
-      return;
-    }
-    yield json.parts as BPPart[];
-    if (page >= Number(json.totalPages || 1)) return;
-    page++;
-  }
-}
-
-async function upsertWoo(ctx: InvocationContext, p: BPPart, publish: boolean) {
-  // 1) Finns produkt med samma SKU?
-  const sku = p.code;
   const f = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
-  const { json: findJson } = await readJsonSafe(f);
-  const exists = Array.isArray(findJson) && findJson[0];
+  const { json: list } = await readJsonSafe(f);
 
-  // 2) Bygg Woo payload (minimal men tillräcklig)
-  const name = p.title || p.code;
+  const name = p.title || sku;
   const description = [p.subText || "", p.content || ""].filter(Boolean).join("<hr/>");
-  const images = (p.imageUrls || []).slice(0, 4).map((src) => ({ src }));
+  const images = (p.imageUrls || []).slice(0, 4).map((src: string) => ({ src }));
+  const payload: any = { name, sku, description, status: publish ? "publish" : "draft", images };
 
-  const payload: any = {
-    name,
-    sku,
-    description,
-    regular_price: undefined,        // sätts via price-upload senare
-    status: publish ? "publish" : "draft",
-    images,
-    // valfritt: sätt standardkategori om du vill mappa BP->WC här
-    // categories: [{ id: 97 }],
-  };
-
-  if (!exists) {
-    // CREATE
-    const c = await wcFetch(`/products`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const { text } = await readJsonSafe(c);
-    if (!c.ok) throw new Error(`Woo create ${sku} failed ${c.status}: ${text.slice(0,180)}`);
-    return { created: true, id: (JSON.parse(text) as any).id };
+  if (Array.isArray(list) && list.length > 0) {
+    const id = list[0].id;
+    const u = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+    return { created: 0, updated: u.ok ? 1 : 0, skipped: u.ok ? 0 : 1 };
   } else {
-    // UPDATE (lägg bara till data – skriv inte över allt)
-    const id = findJson[0].id;
-    const u = await wcFetch(`/products/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
-    const { text } = await readJsonSafe(u);
-    if (!u.ok) throw new Error(`Woo update ${sku} failed ${u.status}: ${text.slice(0,180)}`);
-    return { updated: true, id };
+    const c = await wcFetch(`/products`, { method: "POST", body: JSON.stringify(payload) });
+    return { created: c.ok ? 1 : 0, updated: 0, skipped: c.ok ? 0 : 1 };
   }
 }
 
 app.http("import-run", {
-  route: "import-run",
-  methods: ["POST", "OPTIONS", "GET"],
+  route: "api/import-run",
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    const cors = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
-    if (req.method === "OPTIONS") return { status: 200, headers: cors };
-    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-run" }, headers: cors };
+    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-run" }, headers: CORS };
 
     try {
-      const { subcategoryIds = [], publish = true } = (await req.json()) as RunBody;
+      const b = (await req.json()) as Body;
+      const ids: number[] = (b?.subcategoryIds || [])
+        .map((n) => Number(n))
+        .filter((n) => Number.isFinite(n));
+      if (!ids.length) return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: CORS };
 
-      if (!Array.isArray(subcategoryIds) || subcategoryIds.length === 0) {
-        return { status: 400, jsonBody: { error: "subcategoryIds required" }, headers: cors };
-      }
-      // Gör en snabb set med siffer-ID:n
-      const wanted = new Set(
-        subcategoryIds.map((v) => Number(String(v).trim())).filter((n) => Number.isFinite(n))
-      );
+      const publish = !!b.publish;
+      let page = Math.max(1, Number(b?.pageStart ?? 1));
+      const maxPages = Math.max(1, Math.min(5, Number(b?.maxPagesPerCall ?? 2)));
 
-      let scanned = 0;
-      let matched = 0;
-      let created = 0;
-      let updated = 0;
-      const sample: { created: any[]; updated: any[]; skipped: any[]; errors: any[] } = {
-        created: [],
-        updated: [],
-        skipped: [],
-        errors: [],
-      };
+      let scanned = 0, matched = 0, created = 0, updated = 0, skipped = 0, processedPages = 0;
+      let reachedEnd = false;
+      let lastTotalPages = 1;
 
-      for await (const parts of iterBritpartAll(ctx)) {
+      const sample = { created: [] as any[], updated: [] as any[], skipped: [] as any[], errors: [] as any[] };
+
+      for (let i = 0; i < maxPages; i++) {
+        const res = await britpartFetch("/part/getall", { page });
+        const text = await res.text();
+        if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text.slice(0, 180)}`);
+
+        const j = JSON.parse(text);
+        const parts: any[] = Array.isArray(j.parts) ? j.parts : [];
+        const totalPages = Number(j.totalPages || 1);
+        lastTotalPages = totalPages;
+
         for (const p of parts) {
           scanned++;
-          const cats = (p.categoryIds || []).map(Number);
-          const hit = cats.some((c) => wanted.has(c));
-          if (!hit) { 
-            if (sample.skipped.length < 5) sample.skipped.push(p.code);
-            continue; 
-          }
+          const cats: number[] = (p.categoryIds || []).map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n));
+          if (!cats.some((c: number) => ids.includes(c))) { if (sample.skipped.length < 5) sample.skipped.push(p.code); continue; }
           matched++;
 
           try {
-            const res = await upsertWoo(ctx, p, publish);
-            if (res.created) {
-              created++;
-              if (sample.created.length < 5) sample.created.push({ sku: p.code, id: res.id });
-            } else if (res.updated) {
-              updated++;
-              if (sample.updated.length < 5) sample.updated.push({ sku: p.code, id: res.id });
-            }
+            const r = await upsertWoo(p, publish);
+            created += r.created; updated += r.updated; skipped += r.skipped;
+            if (r.created && sample.created.length < 5) sample.created.push({ sku: p.code });
+            if (r.updated && sample.updated.length < 5) sample.updated.push({ sku: p.code });
           } catch (e: any) {
             if (sample.errors.length < 5) sample.errors.push({ sku: p.code, error: e?.message || String(e) });
           }
         }
+
+        processedPages++;
+        if (page >= totalPages) { reachedEnd = true; break; }
+        page++; // förbered nästa loop‑sida
       }
+
+      // page pekar nu på NÄSTA sida att hämta om vi inte nått slutet
+      const nextPage: number | null = !reachedEnd && processedPages > 0 && page <= lastTotalPages ? page : null;
 
       return {
         status: 200,
-        jsonBody: {
-          ok: true,
-          scanned,
-          matched,
-          created,
-          updated,
-          sample,
-        },
-        headers: cors,
+        jsonBody: { ok: true, processedPages, scanned, matched, created, updated, skipped, nextPage, sample },
+        headers: CORS
       };
     } catch (e: any) {
-      ctx.error("import-run failed", e);
-      return { status: 500, jsonBody: { error: e?.message || "import-run failed" }, headers: cors };
+      ctx.error(e);
+      return { status: 500, jsonBody: { error: e.message || "import-run failed" }, headers: CORS };
     }
-  },
+  }
 });
