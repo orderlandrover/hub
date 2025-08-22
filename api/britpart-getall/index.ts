@@ -1,28 +1,47 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartGetAll } from "../shared/britpart";
+import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
+import { britpartFetch } from "../shared/britpart";
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+type PartsResponse = {
+  total: number;
+  totalPages: number;
+  page: number;
+  parts: any[];
+};
 
 app.http("britpart-getall", {
-  route: "britpart-getall",
-  methods: ["GET"],
+  route: "api/britpart-getall",
+  methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+
     try {
-      const u = new URL(req.url);
-      const page = Number(u.searchParams.get("page") || 1);
-      const code = u.searchParams.get("code") || undefined;
-      const modifiedSince = u.searchParams.get("modifiedSince") || undefined;
-      const tokenOverride = u.searchParams.get("token") || undefined;
+      const url = new URL(req.url);
+      const page = Number(url.searchParams.get("page") || 1);
+      const code = url.searchParams.get("code") || undefined;
+      const modifiedSince = url.searchParams.get("modifiedSince") || undefined;
 
-      const data = await britpartGetAll({ page, code, modifiedSince }, tokenOverride);
+      const res = await britpartFetch("/part/getall", { page, code, modifiedSince });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text.slice(0, 160)}`);
 
-      return {
-        status: 200,
-        jsonBody: data,
-        headers: { "Access-Control-Allow-Origin": "*" }
+      const j = JSON.parse(text);
+      const out: PartsResponse = {
+        total: Number(j.total ?? (Array.isArray(j.parts) ? j.parts.length : 0)),
+        totalPages: Number(j.totalPages ?? 1),
+        page: Number(j.page ?? page),
+        parts: Array.isArray(j.parts) ? j.parts : [],
       };
+
+      return { status: 200, jsonBody: out, headers: CORS };
     } catch (e: any) {
-      ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message || "britpart-getall failed" } };
+      return { status: 500, jsonBody: { error: e?.message || "britpart-getall failed" }, headers: CORS };
     }
-  }
+  },
 });
