@@ -1,38 +1,64 @@
 // api/britpart-categories/index.ts
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartFetch } from "../shared/britpart";
+import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { assertEnv } from "../shared/env";
+import { britpartFetch } from "../shared/britpart";
 
-type Category = {
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+type BpCategory = {
   id: number;
-  title: string;
+  title?: string;
   description?: string;
   url?: string;
   partCodes?: string[];
   subcategoryIds?: number[];
-  subcategories?: Category[];
+  subcategories?: BpCategory[];
 };
 
 app.http("britpart-categories", {
-  route: "britpart-categories",  // => /api/britpart-categories
-  methods: ["GET"],
+  route: "britpart-categories",
+  methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+
     try {
-      assertEnv("BRITPART_API_BASE");
+      // ✅ RÄTT env‑nycklar (inte BRITPART_API_BASE)
+      assertEnv("BRITPART_BASE", "BRITPART_TOKEN");
+
       const url = new URL(req.url);
-      const categoryId = url.searchParams.get("categoryId") || undefined; // default 3 om den utelämnas
-      const tokenOverride = url.searchParams.get("token") || undefined;
+      const categoryId = Number(url.searchParams.get("categoryId") ?? 3);
 
-      const res = await britpartFetch("/part/getcategories", { categoryId }, tokenOverride);
+      // ✅ britpartFetch tar (path, query) – INTE tre argument
+      const res = await britpartFetch("/part/getcategories", { categoryId });
       const text = await res.text();
-      if (!res.ok) throw new Error(`Britpart getcategories ${res.status}: ${text}`);
 
-      const data = JSON.parse(text) as Category | { error?: string };
-      return { status: 200, jsonBody: data };
+      if (!res.ok) {
+        return {
+          status: 502,
+          jsonBody: {
+            error: `Britpart getcategories ${res.status}`,
+            snippet: text.slice(0, 200),
+          },
+          headers: CORS,
+        };
+      }
+
+      const data = JSON.parse(text) as BpCategory;
+      const subs = Array.isArray(data.subcategories) ? data.subcategories : [];
+      const items = subs.map((s) => ({ id: String(s.id), name: s.title ?? `#${s.id}` }));
+
+      return { status: 200, jsonBody: { items }, headers: CORS };
     } catch (e: any) {
-      ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message ?? "britpart-categories failed" } };
+      return {
+        status: 500,
+        jsonBody: { error: e?.message || "britpart-categories failed" },
+        headers: CORS,
+      };
     }
   },
 });
