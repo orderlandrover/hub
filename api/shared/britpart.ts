@@ -1,81 +1,89 @@
 // api/shared/britpart.ts
 import { env } from "./env";
 
-/**
- * Bas-URL ska vara https://www.britpart.com (utan /api/v1)
- * Token ligger i BRITPART_TOKEN
- */
-const BRITPART_BASE = env.BRITPART_BASE.replace(/\/$/, "");
-const BRITPART_TOKEN = env.BRITPART_TOKEN;
+const BASE = env.BRITPART_BASE.replace(/\/$/, ""); // t.ex. https://www.britpart.com
+const TOKEN = env.BRITPART_TOKEN;
 
-function authHeaders(): Record<string, string> {
-  return { Token: BRITPART_TOKEN };
+export type BritpartCategory = {
+  id: number;
+  title: string;
+  description?: string;
+  url?: string;
+  partCodes?: string[];
+  subcategoryIds?: number[];
+  subcategories?: BritpartCategory[];
+};
+
+function authHeaders(): Headers {
+  const h = new Headers();
+  h.set("Token", TOKEN);
+  return h;
 }
 
-/** Bygg en full Britpart-URL mot deras "api/v1" */
-export function makeBritpartUrl(path: string): string {
-  const p = path.replace(/^\/+/, "");
-  return `${BRITPART_BASE}/api/v1/${p}`;
-}
+export async function britpartJson<T = unknown>(path: string): Promise<T> {
+  const url = `${BASE}/api/v1/part/${path}`;
+  const res = await fetch(url, { headers: authHeaders() });
 
-/** Litet fetch‑wrapper (utan JSON-hantering) */
-export async function britpartFetch(path: string): Promise<Response> {
-  const url = makeBritpartUrl(path);
-  return fetch(url, { headers: authHeaders() });
-}
-
-/** Hämta JSON från Britpart API och returnera som objekt */
-export async function britpartJson(path: string): Promise<any> {
-  const res = await britpartFetch(path);
   const text = await res.text();
+  let json: unknown;
+  try { json = text ? JSON.parse(text) : {}; } catch {
+    throw new Error(`Britpart ${path} ${res.status}: ${text.slice(0, 400)}`);
+  }
   if (!res.ok) {
-    throw new Error(`Britpart ${path} ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Britpart ${path} ${res.status}: ${text.slice(0, 400)}`);
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Britpart ${path} parse error: ${text.slice(0, 300)}`);
-  }
+  return json as T;
 }
 
-/** Hämta en hel kategori‑nod (inkl. underkategorier + partCodes) */
-export async function britpartGetCategoryNode(categoryId: number | string): Promise<any> {
-  return britpartJson(`part/getcategories?categoryId=${encodeURIComponent(String(categoryId))}`);
+// Hämtar en kategori-nod
+export async function getCategory(categoryId: number): Promise<BritpartCategory> {
+  return britpartJson<BritpartCategory>(`getcategories?categoryId=${categoryId}`);
 }
 
 /**
- * Samla partnummer (partCodes) rekursivt.
- * Alla fält är optional – vi skyddar oss mot undefined.
+ * Samla SKU:er (partCodes) rekursivt från en eller flera startkategorier.
+ * Tål att Britpart ibland skickar "subcategories" inbäddat och ibland bara "subcategoryIds".
  */
-export function collectPartCodesFrom(node: any, out: Set<string>): void {
-  if (!node) return;
+export async function collectPartCodesFromMany(
+  categoryIds: number[],
+  limit = 200_000
+): Promise<string[]> {
+  const out = new Set<string>();
+  const stack: number[] = [...categoryIds];
 
-  if (Array.isArray(node)) {
-    for (const child of node) collectPartCodesFrom(child, out);
-    return;
-  }
+  while (stack.length && out.size < limit) {
+    const id = stack.pop()!;
+    const node = await getCategory(id);
 
-  const list = Array.isArray(node.partCodes) ? (node.partCodes as string[]) : [];
-  for (const code of list) {
-    const sku = String(code || "").trim();
-    if (sku) out.add(sku);
-  }
-
-  const subs = Array.isArray(node.subcategories) ? node.subcategories : [];
-  for (const child of subs) collectPartCodesFrom(child, out);
-}
-
-/** Hämta alla partCodes för givna subcategoryIds */
-export async function collectPartCodesForSubcategoryIds(ids: Array<number | string>): Promise<Set<string>> {
-  const unique = new Set<string>();
-  for (const id of ids) {
-    try {
-      const node = await britpartGetCategoryNode(id);
-      collectPartCodesFrom(node, unique);
-    } catch {
-      // fortsätt nästa id
-      continue;
+    if (Array.isArray(node.partCodes) && node.partCodes.length) {
+      for (const code of node.partCodes) {
+        if (out.size >= limit) break;
+        out.add(String(code).trim());
+      }
     }
+
+    // Barn kan komma som subcategoryIds eller inbäddade subcategories
+    const ids: number[] = [];
+    if (Array.isArray(node.subcategoryIds)) {
+      for (const cid of node.subcategoryIds) ids.push(Number(cid));
+    }
+    if (Array.isArray(node.subcategories)) {
+      for (const c of node.subcategories) {
+        if (typeof c?.id === "number") ids.push(c.id);
+        if (Array.isArray(c?.partCodes)) {
+          for (const code of c.partCodes) {
+            if (out.size >= limit) break;
+            out.add(String(code).trim());
+          }
+        }
+        if (Array.isArray(c?.subcategoryIds)) {
+          for (const cid of c.subcategoryIds) ids.push(Number(cid));
+        }
+      }
+    }
+
+    for (const cid of ids) stack.push(cid);
   }
-  return unique;
+
+  return Array.from(out);
 }

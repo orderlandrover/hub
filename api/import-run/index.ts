@@ -1,153 +1,113 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { collectPartCodesFrom } from "../shared/britpart";
-import { wcFetch, wcFindProductBySku } from "../shared/wc";
+import { collectPartCodesFromMany } from "../shared/britpart";
+import { wcFindProductBySku, wcFetch } from "../shared/wc";
 
-type ImportBody = {
-  subcategoryIds: Array<string | number>;
-  publish?: boolean; // om true → publish, annars draft
+type Body = {
+  categoryIds: number[];
+  publish?: boolean;
+  defaultPriceSEK?: number;
+  manageStock?: boolean;
+  stockQty?: number;
 };
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+async function mapLimit<T, R>(arr: T[], limit: number, fn: (x: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(arr.length);
+  let i = 0;
+  const workers: Promise<void>[] = new Array(Math.min(limit, arr.length)).fill(0).map(async () => {
+    while (true) {
+      const idx = i++;
+      if (idx >= arr.length) break;
+      out[idx] = await fn(arr[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 app.http("import-run", {
   route: "import-run",
-  methods: ["POST", "OPTIONS", "GET"],
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
-    if (req.method === "GET")
-      return { status: 200, jsonBody: { ok: true, name: "import-run" }, headers: CORS };
-
-    const t0 = Date.now();
+    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-run" }, headers: CORS };
 
     try {
-      const body = (await req.json()) as ImportBody;
-      const ids = (body?.subcategoryIds || []).map((x) => Number(x)).filter(Boolean);
-      const publish = !!body?.publish;
+      const body = (await req.json()) as Body;
+      const ids = Array.isArray(body?.categoryIds) ? body.categoryIds : [];
+      if (!ids.length) return { status: 400, jsonBody: { error: "categoryIds required" }, headers: CORS };
 
-      if (!ids.length) {
-        return { status: 400, jsonBody: { error: "missing subcategoryIds" }, headers: CORS };
-      }
+      const publish = !!body.publish;
+      const fallbackPrice = Number(body.defaultPriceSEK ?? 0);
+      const manageStock = !!body.manageStock;
+      const stockQty = Number.isFinite(body.stockQty) ? Number(body.stockQty) : 0;
 
-      // 1) Hämta alla part codes från valda underkategorier
-      const allCodes = new Set<string>();
-      const visited = new Set<number>();
+      const skus = await collectPartCodesFromMany(ids);
 
-      for (const id of ids) {
-        const { partCodes, visited: v } = await collectPartCodesFrom(id);
-        partCodes.forEach((c) => allCodes.add(c));
-        v.forEach((n) => visited.add(n));
-      }
+      let created = 0, updated = 0, failed = 0;
+      const examples = { created: [] as string[], updated: [] as string[], errors: [] as any[] };
 
-      // 2) Gå igenom SKU:er och skapa/uppdatera i Woo
-      let created = 0;
-      let updated = 0;
-      let skipped = 0;
-      let errors = 0;
-
-      const sample = {
-        created: [] as Array<{ id: number; sku: string }>,
-        updated: [] as Array<{ id: number; sku: string }>,
-        skipped: [] as Array<{ sku: string; reason: string }>,
-        errors: [] as Array<{ sku?: string; error: string }>,
-      };
-
-      // Låg takt för att vara snäll mot Woo (öka vid behov)
-      for (const code of allCodes) {
-        const sku = code.trim();
-        if (!sku) continue;
-
+      await mapLimit(skus, 4, async (sku) => {
         try {
           const existing = await wcFindProductBySku(sku);
 
-          if (existing) {
-            // Uppdatera status om publish=true och inte redan publish
-            if (publish && existing.status !== "publish") {
-              const resUpd = await wcFetch(`/products/${existing.id}`, {
-                method: "PUT",
-                body: JSON.stringify({ status: "publish" }),
-              });
-              if (!resUpd.ok) {
-                const msg = await resUpd.text();
-                errors++;
-                if (sample.errors.length < 5) sample.errors.push({ sku, error: msg.slice(0, 200) });
-              } else {
-                updated++;
-                if (sample.updated.length < 5) sample.updated.push({ id: existing.id, sku });
-              }
-            } else {
-              skipped++;
-              if (sample.skipped.length < 5)
-                sample.skipped.push({ sku, reason: publish ? "already publish" : "exists" });
-            }
-          } else {
-            // Skapa enkel produkt
-            const payload = {
-              name: sku, // tills vi ev. enrichar med namn – pris sätts senare via prisimporten
+          if (!existing) {
+            const payload: any = {
+              name: sku,
               sku,
               status: publish ? "publish" : "draft",
-              type: "simple",
-              // Woo tillåter utan pris, men sätter gärna 0 så den är giltig
-              regular_price: "0",
-              stock_status: "instock",
+              stock_status: manageStock ? (stockQty > 0 ? "instock" : "outofstock") : "instock",
             };
+            if (fallbackPrice > 0) payload.regular_price = fallbackPrice.toFixed(2);
+            if (manageStock) {
+              payload.manage_stock = true;
+              payload.stock_quantity = stockQty;
+            }
 
-            const resNew = await wcFetch(`/products`, {
-              method: "POST",
-              body: JSON.stringify(payload),
-            });
-            const txt = await resNew.text();
+            const res = await wcFetch(`/products`, { method: "POST", body: JSON.stringify(payload) });
+            if (!res.ok) {
+              failed++; if (examples.errors.length < 5) examples.errors.push({ sku, error: (await res.text()).slice(0, 200) });
+              return;
+            }
+            created++; if (examples.created.length < 5) examples.created.push(sku);
+          } else {
+            const patch: any = {};
+            if (publish && existing.status !== "publish") patch.status = "publish";
+            if (fallbackPrice > 0) patch.regular_price = fallbackPrice.toFixed(2);
+            if (manageStock) {
+              patch.manage_stock = true;
+              patch.stock_quantity = stockQty;
+              patch.stock_status = stockQty > 0 ? "instock" : "outofstock";
+            }
 
-            if (!resNew.ok) {
-              errors++;
-              if (sample.errors.length < 5) sample.errors.push({ sku, error: txt.slice(0, 200) });
-            } else {
-              created++;
-              try {
-                const j = JSON.parse(txt);
-                if (sample.created.length < 5) sample.created.push({ id: j?.id, sku });
-              } catch {
-                if (sample.created.length < 5) sample.created.push({ id: 0, sku });
+            if (Object.keys(patch).length) {
+              const res2 = await wcFetch(`/products/${existing.id}`, { method: "PUT", body: JSON.stringify(patch) });
+              if (!res2.ok) {
+                failed++; if (examples.errors.length < 5) examples.errors.push({ sku, error: (await res2.text()).slice(0, 200) });
+                return;
               }
+              updated++; if (examples.updated.length < 5) examples.updated.push(sku);
             }
           }
         } catch (e: any) {
-          errors++;
-          if (sample.errors.length < 5) sample.errors.push({ sku, error: e?.message || String(e) });
+          failed++; if (examples.errors.length < 5) examples.errors.push({ sku, error: e.message || String(e) });
         }
-
-        // Lite paus för att undvika throttling (justera vid behov)
-        await sleep(80);
-      }
-
-      const elapsedMs = Date.now() - t0;
+      });
 
       return {
         status: 200,
-        jsonBody: {
-          ok: true,
-          summary: { create: created, update: updated, skip: skipped, errors },
-          counts: {
-            inputSubcategories: ids.length,
-            discoveredSubcategories: visited.size,
-            uniquePartCodes: allCodes.size,
-          },
-          sample,
-          elapsedMs,
-        },
-        headers: CORS,
+        jsonBody: { ok: true, categories: ids, skuCount: skus.length, created, updated, failed, examples },
+        headers: CORS
       };
     } catch (e: any) {
       ctx.error(e);
-      return { status: 500, jsonBody: { error: e?.message || String(e) }, headers: CORS };
+      return { status: 500, jsonBody: { error: e.message || String(e) }, headers: CORS };
     }
-  },
+  }
 });
