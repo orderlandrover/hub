@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p .",
+    "clean": "rimraf dist .tsbuildinfo",
     "start": "func start --javascript"
   },
   "dependencies": {
