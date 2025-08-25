@@ -1,64 +1,43 @@
-// api/britpart-categories/index.ts
-import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { assertEnv } from "../shared/env";
-import { britpartFetch } from "../shared/britpart";
+// Britpart.Categories/index.ts
+import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { getCategory } from "../shared/britpart";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
-
-type BpCategory = {
-  id: number;
-  title?: string;
-  description?: string;
-  url?: string;
-  partCodes?: string[];
-  subcategoryIds?: number[];
-  subcategories?: BpCategory[];
-};
-
-app.http("britpart-categories", {
-  route: "britpart-categories",
+app.http("Britpart.Categories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
-
+  route: "britpart/categories",
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      // ✅ RÄTT env‑nycklar (inte BRITPART_API_BASE)
-      assertEnv("BRITPART_BASE", "BRITPART_TOKEN");
+      const parentId = Number(req.query.get("parentId") ?? "3"); // default "All Parts"
+      const node = await getCategory(parentId);
 
-      const url = new URL(req.url);
-      const categoryId = Number(url.searchParams.get("categoryId") ?? 3);
+      const ids = Array.isArray(node.subcategoryIds) ? node.subcategoryIds : [];
+      const embed = Array.isArray(node.subcategories) ? node.subcategories : [];
 
-      // ✅ britpartFetch tar (path, query) – INTE tre argument
-      const res = await britpartFetch("/part/getcategories", { categoryId });
-      const text = await res.text();
+      // slå ihop inbäddade + id‑lista så UI alltid får nåt att visa
+      const map = new Map<number, { id: number; title: string; hasChildren: boolean }>();
 
-      if (!res.ok) {
-        return {
-          status: 502,
-          jsonBody: {
-            error: `Britpart getcategories ${res.status}`,
-            snippet: text.slice(0, 200),
-          },
-          headers: CORS,
-        };
+      for (const sc of embed) {
+        map.set(sc.id, {
+          id: sc.id,
+          title: sc.title ?? `Category ${sc.id}`,
+          hasChildren: Array.isArray(sc.subcategoryIds) ? sc.subcategoryIds.length > 0 : true,
+        });
+      }
+      for (const id of ids) {
+        if (!map.has(id)) {
+          map.set(id, { id, title: `Category ${id}`, hasChildren: true });
+        }
       }
 
-      const data = JSON.parse(text) as BpCategory;
-      const subs = Array.isArray(data.subcategories) ? data.subcategories : [];
-      const items = subs.map((s) => ({ id: String(s.id), name: s.title ?? `#${s.id}` }));
+      const children = Array.from(map.values()).sort((a, b) =>
+        a.title.localeCompare(b.title, "sv")
+      );
 
-      return { status: 200, jsonBody: { items }, headers: CORS };
+      return { status: 200, jsonBody: { ok: true, parentId, count: children.length, children } };
     } catch (e: any) {
-      return {
-        status: 500,
-        jsonBody: { error: e?.message || "britpart-categories failed" },
-        headers: CORS,
-      };
+      ctx.error("Britpart.Categories error", e);
+      return { status: 500, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },
 });
