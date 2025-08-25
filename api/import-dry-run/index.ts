@@ -3,45 +3,54 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import { britpartGetPartCodesForCategories } from "../shared/britpart";
 import { wcFindProductBySku } from "../shared/wc";
 
-type Body = { categoryIds?: number[] };
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
 app.http("import-dry-run", {
   route: "import-dry-run",
-  methods: ["POST", "OPTIONS", "GET"],
+  methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    const CORS = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
+  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
-    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: CORS };
 
     try {
-      const body = (await req.json().catch(() => ({}))) as Body;
-      const ids = Array.isArray(body.categoryIds) ? body.categoryIds.map(Number).filter(Number.isFinite) : null;
-      if (!ids || ids.length === 0) {
+      const body = (await req.json().catch(() => ({}))) as {
+        subcategoryIds?: (string | number)[];
+        categoryIds?: (string | number)[];
+      };
+
+      // vi accepterar båda fälten, tar första som finns
+      const idsRaw = body.subcategoryIds ?? body.categoryIds;
+      if (!Array.isArray(idsRaw) || idsRaw.length === 0) {
         return { status: 400, jsonBody: { error: "categoryIds required" }, headers: CORS };
       }
 
-      // 1) Hämta ALLA partCodes rekursivt för de valda kategorierna
-      const partCodes = await britpartGetPartCodesForCategories(ids);
+      const catIds = idsRaw.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+      const partCodes = await britpartGetPartCodesForCategories(catIds);
 
-      // 2) “Simulera” vad som skulle hända i WooCommerce
+      // kolla vad som redan finns i Woo (en lätt check via sku)
       let create = 0, update = 0, skip = 0;
       const sample: Array<{ action: "create" | "update" | "skip"; sku: string; id?: number }> = [];
 
-      for (const sku of partCodes) {
-        // Hitta produkt i Woo med denna SKU
-        const product = await wcFindProductBySku(sku);
-        if (product) {
+      for (const sku of partCodes.slice(0, 50)) { // sample för UI (full körning görs i import-run)
+        const hit = await wcFindProductBySku(sku);
+        if (hit?.id) {
           update++;
-          if (sample.length < 5) sample.push({ action: "update", sku, id: product.id });
+          sample.push({ action: "update", sku, id: hit.id });
         } else {
           create++;
-          if (sample.length < 5) sample.push({ action: "create", sku });
+          sample.push({ action: "create", sku });
         }
+      }
+
+      // resten räknas som “okända”, vi antar create/skip beroende på strategi
+      const known = create + update;
+      if (partCodes.length > known) {
+        // vi antar create på resten (det är just en DRY-run)
+        create += partCodes.length - known;
       }
 
       return {
@@ -49,16 +58,17 @@ app.http("import-dry-run", {
         jsonBody: {
           ok: true,
           total: partCodes.length,
-          create,
-          update,
-          skip,
+          summary: { create, update, skip },
           sample,
         },
         headers: CORS,
       };
     } catch (e: any) {
-      ctx.error("import-dry-run failed", e);
-      return { status: 500, jsonBody: { error: e?.message || String(e) }, headers: CORS };
+      return {
+        status: 500,
+        jsonBody: { error: e?.message || "Backend call failure" },
+        headers: CORS,
+      };
     }
   },
 });
