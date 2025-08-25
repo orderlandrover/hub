@@ -15,7 +15,7 @@ type PartsResponse = {
 };
 
 app.http("britpart-products", {
-  route: "api/britpart-products",
+  route: "britpart-products",
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {

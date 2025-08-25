@@ -14,7 +14,7 @@ type Body = {
 };
 
 app.http("import-dry-run", {
-  route: "api/import-dry-run",
+  route: "import-dry-run",
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {

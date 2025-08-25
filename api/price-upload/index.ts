@@ -49,7 +49,7 @@ function pickGbp(row: Record<string,string>) {
 }
 
 app.http("price-upload", {
-  route: "api/price-upload",
+  route: "price-upload",
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {

@@ -38,7 +38,7 @@ async function upsertWoo(p: any, publish: boolean) {
 }
 
 app.http("import-run", {
-  route: "api/import-run",
+  route: "import-run",
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {

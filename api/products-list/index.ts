@@ -4,7 +4,7 @@ import { wcFetch, readJsonSafe } from "../shared/wc";
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
 app.http("products-list", {
-  route: "api/products-list",
+  route: "products-list",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {

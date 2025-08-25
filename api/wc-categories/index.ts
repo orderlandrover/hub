@@ -4,7 +4,7 @@ import { wcFetch } from "../shared/wc";
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
 app.http("wc-categories", {
-  route: "api/wc-categories",
+  route: "wc-categories",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (_req: HttpRequest): Promise<HttpResponseInit> => {

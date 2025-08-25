@@ -8,7 +8,7 @@ const CORS = {
 };
 
 app.http("britpart-subcategories", {
-  route: "api/britpart-subcategories",
+  route: "britpart-subcategories",
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (_req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
