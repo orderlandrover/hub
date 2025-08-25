@@ -1,79 +1,55 @@
+// api/import-dry-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { collectPartCodesFromMany } from "../shared/britpart";
+import { britpartGetByCategories, BritpartImportItem } from "../shared/britpart";
 import { wcFindProductBySku } from "../shared/wc";
-
-type Body = {
-  categoryIds: number[];      // valda underkategorier, ex [44,57]
-};
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-// enkel concurrency‑begränsare för Woo-anrop
-async function mapLimit<T, R>(arr: T[], limit: number, fn: (x: T, i: number) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(arr.length);
-  let i = 0;
-  const workers: Promise<void>[] = new Array(Math.min(limit, arr.length)).fill(0).map(async () => {
-    while (true) {
-      const idx = i++;
-      if (idx >= arr.length) break;
-      out[idx] = await fn(arr[idx], idx);
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
+type DryRunBody = { categoryIds: number[] };
 
 app.http("import-dry-run", {
   route: "import-dry-run",
-  methods: ["GET", "POST", "OPTIONS"],
+  methods: ["POST", "OPTIONS", "GET"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
     if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: CORS };
 
     try {
-      const body = (await req.json()) as Body;
-      const ids = Array.isArray(body?.categoryIds) ? body.categoryIds : [];
-      if (!ids.length) return { status: 400, jsonBody: { error: "categoryIds required" }, headers: CORS };
+      const body = (await req.json()) as DryRunBody;
+      if (!body?.categoryIds?.length) throw new Error("categoryIds required");
 
-      // 1) Hämta SKU:er från Britpart
-      const skus = await collectPartCodesFromMany(ids);
+      const items: BritpartImportItem[] = await britpartGetByCategories(body.categoryIds);
 
-      // 2) Kolla mot WooCommerce
-      let create = 0, update = 0;
-      const creates: string[] = [];
-      const updates: string[] = [];
+      let create = 0, update = 0, skip = 0;
+      const sample: any[] = [];
 
-      await mapLimit(skus, 6, async (sku) => {
-        const prod = await wcFindProductBySku(sku);
-        if (!prod) {
+      for (const it of items) {
+        const sku = it.sku?.trim();
+        if (!sku) { skip++; continue; }
+
+        const existing = await wcFindProductBySku(sku);
+        if (!existing) {
           create++;
-          if (creates.length < 10) creates.push(sku);
+          if (sample.length < 5) sample.push({ action: "create", sku, name: it.name });
         } else {
+          // Uppdatering sker i import-run, här räknar vi bara
           update++;
-          if (updates.length < 10) updates.push(sku);
+          if (sample.length < 5) sample.push({ action: "update", sku, id: existing.id });
         }
-      });
+      }
 
       return {
         status: 200,
-        jsonBody: {
-          ok: true,
-          categories: ids,
-          skuCount: skus.length,
-          create,
-          update,
-          sample: { creates, updates }
-        },
-        headers: CORS
+        jsonBody: { ok: true, total: items.length, create, update, skip, sample },
+        headers: CORS,
       };
     } catch (e: any) {
-      ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message || String(e) }, headers: CORS };
+      return { status: 400, jsonBody: { error: e.message }, headers: CORS };
     }
-  }
+  },
 });
