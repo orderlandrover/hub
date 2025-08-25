@@ -76,3 +76,25 @@ export async function britpartJson<T = any>(
   }
   return json as T;
 }
+
+/** 
+ * Rekursiv funktion för att samla alla partCodes från en kategori och dess subkategorier.
+ * Används när man väljer kategori i UI och vi måste hämta alla produkter i trädet.
+ */
+export function collectPartCodesFrom(cat: any): string[] {
+  const collected: string[] = [];
+
+  // Lägg till egna partCodes
+  if (Array.isArray(cat?.partCodes)) {
+    collected.push(...cat.partCodes.map((c: any) => String(c)));
+  }
+
+  // Rekursivt på subkategorier
+  if (Array.isArray(cat?.subcategories)) {
+    for (const sub of cat.subcategories) {
+      collected.push(...collectPartCodesFrom(sub));
+    }
+  }
+
+  return collected;
+}
