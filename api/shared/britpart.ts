@@ -1,31 +1,75 @@
-import { env, assertEnv } from "./env";
+// api/shared/britpart.ts
+import { env } from "./env";
 
-/** Bygger alltid https://www.britpart.com/api/v1/{path}?token=...&... */
-export function makeBritpartUrl(path: string, q: Record<string, any> = {}) {
-  assertEnv("BRITPART_BASE", "BRITPART_TOKEN");
-  const base = env.BRITPART_BASE.replace(/\/$/, "");   // EXAKT: "https://www.britpart.com"
-  const url = new URL(base + "/api/v1" + (path.startsWith("/") ? path : `/${path}`));
+const BASE = env.BRITPART_BASE;         // t.ex. "https://www.britpart.com"
+const TOKEN = env.BRITPART_TOKEN;
 
-  // query
-  for (const [k, v] of Object.entries(q)) {
-    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+type CatNode = {
+  id: number;
+  title: string;
+  partCodes?: string[];
+  subcategoryIds?: number[];
+};
+
+type CatResponse = {
+  id: number;
+  title: string;
+  partCodes: string[];
+  subcategoryIds: number[];
+  subcategories: CatNode[];
+};
+
+export async function bpFetch(path: string, init?: RequestInit) {
+  const base = BASE.replace(/\/$/, "");
+  const url = `${base}/api/v1${path}`;
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+    Token: TOKEN,
+  };
+  const res = await fetch(url, { ...init, headers });
+  return res;
+}
+
+/** Hämta en nivå av kategori-trädet */
+export async function getCategoryNode(categoryId: number): Promise<CatResponse> {
+  const res = await bpFetch(`/part/getcategories?categoryId=${categoryId}`);
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Britpart getcategories ${res.status}: ${text.slice(0, 200)}`);
   }
-  // token om den inte redan finns i q
-  if (!url.searchParams.get("token")) url.searchParams.set("token", env.BRITPART_TOKEN);
-
-  return url.toString();
+  try {
+    return JSON.parse(text) as CatResponse;
+  } catch {
+    throw new Error(`Britpart JSON parse fail (getcategories): ${text.slice(0, 200)}`);
+  }
 }
 
-export async function britpartFetch(path: string, q: Record<string, any> = {}) {
-  const url = makeBritpartUrl(path, q);
-  return fetch(url, { method: "GET" });
-}
+/** Rekursivt samla alla partCodes från en startkategori (inkl. blad som innehåller partCodes direkt) */
+export async function collectPartCodesFrom(categoryId: number): Promise<{
+  partCodes: Set<string>;
+  visited: Set<number>;
+}> {
+  const partCodes = new Set<string>();
+  const visited = new Set<number>();
 
-// Hjälpare (frivilliga, för tydligare anrop)
-export function britpartGetAllQuery(opts: { page?: number; code?: string; modifiedSince?: string } = {}) {
-  const q: Record<string, any> = {};
-  if (opts.page) q.page = opts.page;
-  if (opts.code) q.code = opts.code;
-  if (opts.modifiedSince) q.modifiedSince = opts.modifiedSince;
-  return q;
+  async function walk(id: number) {
+    if (visited.has(id)) return;
+    visited.add(id);
+
+    const node = await getCategoryNode(id);
+
+    (node.partCodes || []).forEach((c) => c && partCodes.add(c.trim()));
+
+    // gå vidare ner om det finns barn
+    const kids = node.subcategoryIds?.length
+      ? node.subcategoryIds
+      : (node.subcategories || []).map((s) => s.id);
+
+    for (const kid of kids || []) {
+      if (typeof kid === "number") await walk(kid);
+    }
+  }
+
+  await walk(categoryId);
+  return { partCodes, visited };
 }

@@ -1,22 +1,29 @@
-import { env, assertEnv } from "./env";
+// api/shared/wc.ts
+import { env } from "./env";
 
-export async function wcFetch(path: string, init: RequestInit = {}) {
-  assertEnv("WP_URL", "WC_KEY", "WC_SECRET");
-  const base = env.WP_URL.replace(/\/$/, "");
-  const url = `${base}/wp-json/wc/v3${path.startsWith("/") ? path : `/${path}`}`;
+const WP_URL = env.WP_URL.replace(/\/$/, "");
+const WC_KEY = env.WC_KEY;
+const WC_SECRET = env.WC_SECRET;
 
-  const auth = Buffer.from(`${env.WC_KEY}:${env.WC_SECRET}`).toString("base64");
-  const headers = {
-    "Authorization": `Basic ${auth}`,
+function authHeader() {
+  const token = Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString("base64");
+  return `Basic ${token}`;
+}
+
+export async function wcFetch(path: string, init?: RequestInit) {
+  const url = `${WP_URL}/wp-json/wc/v3${path}`;
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+    Authorization: authHeader(),
     "Content-Type": "application/json",
-    ...init.headers,
   };
-
   return fetch(url, { ...init, headers });
 }
 
-export async function readJsonSafe(res: Response): Promise<{ json: any; text: string }> {
-  const text = await res.text();
-  try { return { json: text ? JSON.parse(text) : null, text }; }
-  catch { return { json: null, text }; }
+/** Hitta Woo‑produkt via SKU, returnerar första träffen eller null */
+export async function wcFindProductBySku(sku: string): Promise<any | null> {
+  const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return Array.isArray(data) && data[0] ? data[0] : null;
 }
