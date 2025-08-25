@@ -3,7 +3,7 @@ import "./ping";
 import "./britpart-products";
 import "./britpart-categories";
 import "./britpart-getall";
-import "./britpart-subcategories";
+import "./britpart/subcategories";
 import "./britpart-probe";
 import "./import-one";
 import "./import-dry-run";

@@ -6,7 +6,7 @@ app.http("Britpart.SubcategoriesLegacy", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   // 👇 Legacy route (bindestreck) för bakåtkompabilitet
-  route: "britpart-subcategories",
+  route: "britpart/subcategories",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       if (req.method === "OPTIONS") {
@@ -48,7 +48,7 @@ app.http("Britpart.SubcategoriesLegacy", {
         jsonBody: { ok: true, parentId, count: children.length, children },
       };
     } catch (e: any) {
-      ctx.error("britpart-subcategories error", e);
+      ctx.error("britpart/subcategories error", e);
       return {
         status: 500,
         headers: { "Access-Control-Allow-Origin": "*" },

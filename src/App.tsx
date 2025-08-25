@@ -585,7 +585,7 @@ function ImportTab(): React.ReactElement {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/britpart-subcategories");
+        const res = await fetch("/api/britpart/subcategories");
         if (!res.ok) throw new Error(await res.text());
         const j = await res.json();
         const items: BPSub[] = Array.isArray(j?.items)
