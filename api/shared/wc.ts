@@ -34,3 +34,13 @@ export async function wcCreateProduct(payload: any): Promise<Response> {
 export async function wcUpdateProduct(id: number, payload: any): Promise<Response> {
   return wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
 }
+
+/** Säker JSON-parse med förbättrat felmeddelande – används av price-upload */
+export async function readJsonSafe<T = any>(res: Response): Promise<T> {
+  const txt = await res.text();
+  try {
+    return JSON.parse(txt) as T;
+  } catch {
+    throw new Error(`WC JSON parse error ${res.status}: ${txt.slice(0, 300)}`);
+  }
+}

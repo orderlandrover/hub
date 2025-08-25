@@ -47,9 +47,7 @@ async function safeJson<T = any>(res: Response): Promise<T> {
   try {
     return JSON.parse(txt) as T;
   } catch {
-    throw new Error(
-      `Britpart JSON parse error ${res.status}: ${txt.slice(0, 300)}`
-    );
+    throw new Error(`Britpart JSON parse error ${res.status}: ${txt.slice(0, 300)}`);
   }
 }
 
@@ -85,14 +83,59 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
   };
 }
 
-/** försiktig fetch mot Britpart m. retries/backoff på 5xx/429 + nätverksfel */
-async function britpartFetchRaw(path: string, init?: RequestInit) {
-  const url = path.startsWith("http")
+/* ------------------------------------------------------------------ */
+/* Fetch mot Britpart (med backoff + bakåtkompatibel query-hantering)  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Försiktig fetch mot Britpart med retries/backoff på 5xx/429 + nätverksfel.
+ * Bakåtkompatibel: om init innehåller "okända" fält (t.ex. page, code, modifiedSince, subcategoryId)
+ * och method saknas/är GET → behandla dem som query-parametrar.
+ */
+async function britpartFetchRaw(path: string, init?: RequestInit | Record<string, any>) {
+  // Bas-URL
+  const base = path.startsWith("http")
     ? path
     : `${BRITPART_BASE}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
 
+  // Dela upp init i "äkta" RequestInit och potentiella query-parametrar
+  const knownInit: RequestInit = {};
+  const maybeParams: Record<string, any> = {};
+
+  if (init && typeof init === "object") {
+    const knownKeys: (keyof RequestInit)[] = [
+      "method","headers","body","mode","credentials","cache","redirect",
+      "referrer","referrerPolicy","integrity","keepalive","signal","window"
+    ];
+    for (const [k, v] of Object.entries(init)) {
+      if ((knownKeys as string[]).includes(k)) {
+        // @ts-expect-error: tillåt assignment här
+        knownInit[k] = v as any;
+      } else {
+        maybeParams[k] = v;
+      }
+    }
+  }
+
+  // Om method saknas eller är GET och vi har "okända" fält → gör dem till query-parametrar
+  let url = base;
+  const method = (knownInit.method ?? "GET").toString().toUpperCase();
+  if (method === "GET" && Object.keys(maybeParams).length > 0) {
+    const usp = new URLSearchParams();
+    for (const [k, v] of Object.entries(maybeParams)) {
+      if (v === undefined || v === null) continue;
+      if (Array.isArray(v)) {
+        v.forEach((vv) => usp.append(k, String(vv)));
+      } else {
+        usp.set(k, String(v));
+      }
+    }
+    url += (url.includes("?") ? "&" : "?") + usp.toString();
+  }
+
+  // Sätt headers inkl. Token
   const headers: Record<string, string> = {
-    ...(init?.headers as Record<string, string> | undefined),
+    ...(knownInit.headers as Record<string, string> | undefined),
     "Content-Type": "application/json",
     Token: BRITPART_TOKEN,
   };
@@ -100,8 +143,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit) {
   let lastErr: any;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const res = await fetch(url, { ...init, headers });
-
+      const res = await fetch(url, { ...knownInit, headers });
       if (res.ok) return res;
 
       // backoff på 5xx/429
@@ -110,12 +152,10 @@ async function britpartFetchRaw(path: string, init?: RequestInit) {
         continue;
       }
 
-      // annan status = "hårt" fel
       const body = await res.text();
       throw new Error(`Britpart ${res.status}: ${body}`);
     } catch (e: any) {
       lastErr = e;
-      // nätverksfel → backoff och nytt försök
       await sleep(400 + attempt * 300);
     }
   }
@@ -249,4 +289,31 @@ export async function britpartGetPartCodesForCategories(
   return Array.from(
     new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0))
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Bakåtkompatibla exporter (för övriga Functions)                     */
+/* ------------------------------------------------------------------ */
+
+// Viktigt: exportera under namnet som dina andra endpoints använder
+export { britpartFetchRaw as britpartFetch };
+
+/** Minimal struktur för import-run m.fl. – kan byggas ut senare */
+export type BritpartImportItem = {
+  sku: string;           // Britpart partCode
+  name?: string;
+  description?: string;  // används av import-run
+  priceGBP?: number;
+  imageUrl?: string;
+  categoryId?: number;
+};
+
+/**
+ * Bakåtkompatibel hjälpare:
+ * - Tar kategori-ID:n och returnerar en lista med ImportItem där minst `sku` är satt.
+ * - Använder vår rekursiva traversal under huven.
+ */
+export async function britpartGetByCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
+  const codes = await britpartGetPartCodesForCategories(categoryIds);
+  return codes.map((sku) => ({ sku }));
 }
