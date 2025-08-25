@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./brand.css";
 
-/* ---------- Typer ---------- */
+/* ------------------------------------------------------------------ */
+/*                              Typer                                  */
+/* ------------------------------------------------------------------ */
+
 type WCProduct = {
   id: number;
   name: string;
@@ -18,10 +21,13 @@ type ListResponse = { items: WCProduct[]; total: number; pages: number; page: nu
 type WCCategory = { id: number; name: string; parent: number };
 type RoundModeUI = "nearest" | "up" | "down" | "none";
 
-/* ---------- Normaliserare (gör UI:et robust mot varierande svar) ---------- */
-function normalizeList(raw: any): { items: WCProduct[]; total: number; pages: number; page: number } {
+/* ------------------------------------------------------------------ */
+/*                          Normaliserare                              */
+/* ------------------------------------------------------------------ */
+
+function normalizeList(raw: any): ListResponse {
   if (Array.isArray(raw)) {
-    return { items: raw as WCProduct[], total: (raw as any[]).length, pages: 1, page: 1 };
+    return { items: raw as WCProduct[], total: raw.length, pages: 1, page: 1 };
   }
   const items: WCProduct[] =
     Array.isArray(raw?.items) ? raw.items :
@@ -38,27 +44,32 @@ function normalizeCategories(raw: any): WCCategory[] {
   return [];
 }
 
-/* ---------- Helper: stabil base64 (utan spread/rekursion) ---------- */
+/* ------------------------------------------------------------------ */
+/*                         Små hjälpare                                */
+/* ------------------------------------------------------------------ */
+
 async function fileToBase64(file: File): Promise<string> {
   return await new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => {
       const s = String(fr.result || "");
-      resolve(s.includes(",") ? s.split(",")[1] : s); // dataURL → bara base64-delen
+      resolve(s.includes(",") ? s.split(",")[1] : s);
     };
     fr.onerror = reject;
     fr.readAsDataURL(file);
   });
 }
 
-/* ---------- Lätta UI-klasser ---------- */
 const brand = {
   card: "bg-white rounded-2xl shadow-sm border",
   chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
 };
 
-/* ===================================================================== */
-export default function App() {
+/* =================================================================== */
+/*                                App                                   */
+/* =================================================================== */
+
+export default function App(): React.ReactElement {
   const [tab, setTab] = useState<"products" | "import">("products");
 
   const header = useMemo(
@@ -86,7 +97,6 @@ export default function App() {
       {header}
 
       <main className="w-full px-6 py-6">
-        {/* Tabs */}
         <div className="mb-6 flex gap-2">
           <button className="px-4 py-2 rounded-lg ui-btn" onClick={() => setTab("products")}>
             Produkter
@@ -102,10 +112,11 @@ export default function App() {
   );
 }
 
-/* =====================================================================
-   Flik 1 – Produkter
-===================================================================== */
-function ProductsTab() {
+/* =================================================================== */
+/*                          Flik 1 – Produkter                          */
+/* =================================================================== */
+
+function ProductsTab(): React.ReactElement {
   // Filter
   const [status, setStatus] = useState<string>("any");
   const [search, setSearch] = useState<string>("");
@@ -550,10 +561,11 @@ function ProductsTab() {
   );
 }
 
-/* =====================================================================
-   Flik 2 – Import & synk
-===================================================================== */
-function ImportTab() {
+/* =================================================================== */
+/*                         Flik 2 – Import & synk                       */
+/* =================================================================== */
+
+function ImportTab(): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [pub, setPub] = useState(true);
@@ -566,17 +578,22 @@ function ImportTab() {
   const [dry, setDry] = useState<boolean>(true);
 
   // Britpart underkategorier
-  const [bpSubs, setBpSubs] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedSubs, setSelectedSubs] = useState<string[]>([]);
+  type BPSub = { id: number; name: string };
+  const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
+  const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/britpart-subcategories");
+        if (!res.ok) throw new Error(await res.text());
         const j = await res.json();
-        setBpSubs(j.items || []);
-      } catch {
-        /* ignore */
+        const items: BPSub[] = Array.isArray(j?.items)
+          ? j.items.map((x: any) => ({ id: Number(x.id), name: String(x.name ?? x.title ?? x.id) }))
+          : [];
+        setBpSubs(items);
+      } catch (e) {
+        addLog(`Fel att hämta underkategorier: ${(e as any)?.message ?? e}`);
       }
     })();
   }, []);
@@ -586,7 +603,24 @@ function ImportTab() {
     setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 500));
   }
 
-  // ---- Prisfil (price-upload) ----
+  async function postJson<T>(url: string, body: unknown): Promise<T> {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* ignore */
+    }
+    if (!res.ok) throw new Error(json?.error || text || `HTTP ${res.status}`);
+    return json as T;
+  }
+
+  // ---- Prisfil
   async function handlePriceUpload(file: File) {
     try {
       setBusy(true);
@@ -617,10 +651,8 @@ function ImportTab() {
       addLog(
         `Prisimport OK: total=${j.total}, updated=${j.updated}, skipped=${j.skipped}, notFound=${j.notFound}, errors=${j.errors}`
       );
-      if (j.sample?.updates?.length)
-        addLog(`Exempel uppdateringar: ${j.sample.updates.length} st`);
-      if (j.sample?.errors?.length)
-        addLog(`Exempel fel: ${j.sample.errors.length} st`);
+      if (j.sample?.updates?.length) addLog(`Exempel uppdateringar: ${j.sample.updates.length} st`);
+      if (j.sample?.errors?.length) addLog(`Exempel fel: ${j.sample.errors.length} st`);
     } catch (e: any) {
       addLog(`Fel: ${e?.message || String(e)}`);
     } finally {
@@ -628,60 +660,63 @@ function ImportTab() {
     }
   }
 
-  // ---- Britpart dry-run / import ----
+  // ---- Britpart dry-run / import
+  function ensureIds(): number[] {
+    const ids = selectedSubs.map((n) => Number(n)).filter(Number.isFinite);
+    if (!ids.length) addLog("Välj minst en underkategori.");
+    return ids;
+  }
+
   async function handleDryRun() {
+    const ids = ensureIds();
+    if (!ids.length) return;
+
     try {
-      if (selectedSubs.length === 0) {
-        addLog("Välj minst en underkategori.");
-        return;
-      }
       setBusy(true);
-      addLog(`Dry-run: ${selectedSubs.join(", ")}`);
-      const res = await fetch("/api/import-dry-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subcategoryIds: selectedSubs }),
-      });
-      const text = await res.text();
-      const j = text ? JSON.parse(text) : {};
-      if (!res.ok) throw new Error(j?.error || text || "Fel i dry-run");
-      addLog(
-        `Dry-run OK – skapa:${j?.summary?.create ?? 0}, uppdatera:${
-          j?.summary?.update ?? 0
-        }, hoppa över:${j?.summary?.skip ?? 0}`
-      );
+      addLog(`Dry-run: ${ids.join(", ")}`);
+      // VIKTIGT: backend vill ha { categoryIds }
+      const j = await postJson<any>("/api/import-dry-run", { categoryIds: ids });
+
+      const create = j?.summary?.create ?? j?.create ?? 0;
+      const update = j?.summary?.update ?? j?.update ?? 0;
+      const skip   = j?.summary?.skip   ?? j?.skip   ?? 0;
+      const total  = j?.summary?.total  ?? j?.total  ?? create + update + skip;
+
+      addLog(`Dry-run OK – total:${total}, skapa:${create}, uppdatera:${update}, hoppa över:${skip}`);
+      if (Array.isArray(j?.sample) && j.sample.length) {
+        const peek = j.sample.slice(0, 5).map((x: any) => x?.sku || x?.id || "?").join(", ");
+        addLog(`Exempel: ${peek}${j.sample.length > 5 ? " …" : ""}`);
+      }
     } catch (e: any) {
-      addLog(`Fel: ${e?.message || String(e)}`);
+      addLog(`Fel i dry-run: ${e.message}`);
     } finally {
       setBusy(false);
     }
   }
 
   async function handleImport() {
+    const ids = ensureIds();
+    if (!ids.length) return;
+
     try {
-      if (selectedSubs.length === 0) {
-        addLog("Välj minst en underkategori.");
-        return;
-      }
       setBusy(true);
-      addLog(`Kör import: ${selectedSubs.join(", ")}`);
-      const res = await fetch("/api/import-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subcategoryIds: selectedSubs }),
-      });
-      const text = await res.text();
-      const j = text ? JSON.parse(text) : {};
-      if (!res.ok) throw new Error(j?.error || text || "Fel i import-run");
-      addLog(`Import påbörjad (jobId=${j.jobId || "ok"})`);
+      addLog(`Kör import: ${ids.join(", ")}`);
+      const j = await postJson<any>("/api/import-run", { categoryIds: ids, publish: true });
+
+      const created = j?.created ?? j?.create ?? 0;
+      const updated = j?.updated ?? j?.update ?? 0;
+      const skipped = j?.skipped ?? j?.skip ?? 0;
+      const total   = j?.total ?? created + updated + skipped;
+      addLog(`Import OK – total:${total}, created:${created}, updated:${updated}, skipped:${skipped}`);
+      if (j?.jobId) addLog(`Jobb-id: ${j.jobId}`);
     } catch (e: any) {
-      addLog(`Fel: ${e?.message || String(e)}`);
+      addLog(`Fel i import: ${e.message}`);
     } finally {
       setBusy(false);
     }
   }
 
-  // ---- Snabbimport (1 produkt) ----
+  // ---- Snabbimport (1 produkt)
   const [sku, setSku] = useState("");
   const [pname, setPname] = useState("");
   const [pprice, setPprice] = useState("");

@@ -13,6 +13,8 @@
   },
   "devDependencies": {
     "@types/csv-parse": "^1.2.5",
+    "@types/react": "^19.1.11",
+    "@types/react-dom": "^19.1.7",
     "typescript": "^5.5.4"
   }
 }
