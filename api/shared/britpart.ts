@@ -8,12 +8,9 @@ export type BritpartCategoryResponse = {
   id: number;
   title?: string;
   url?: string;
-  /** Finns på bladkategorier */
-  partCodes?: string[];
-  /** Finns på föräldrakategorier */
-  subcategoryIds?: number[];
-  /** Ibland skickar API:et även inbäddade subkategorier */
-  subcategories?: Array<{
+  partCodes?: string[];            // Finns på bladkategorier
+  subcategoryIds?: number[];       // Finns på föräldrakategorier
+  subcategories?: Array<{          // Ibland kommer inbäddade barn
     id: number;
     title?: string;
     partCodes?: string[];
@@ -21,26 +18,20 @@ export type BritpartCategoryResponse = {
   }>;
 };
 
-/** Liten helper för try/catch + text fallback vid felsvar */
-async function safeJson(res: Response) {
+async function safeJson<T = any>(res: Response): Promise<T> {
   const txt = await res.text();
-  try {
-    return JSON.parse(txt);
-  } catch {
-    throw new Error(`Britpart JSON parse error ${res.status}: ${txt.slice(0, 300)}`);
-  }
+  try { return JSON.parse(txt) as T; }
+  catch { throw new Error(`Britpart JSON parse error ${res.status}: ${txt.slice(0, 300)}`); }
 }
 
-/** Bas-fetch mot Britpart API */
+/** Basfetch mot Britpart API v1 (lägger på /api/v1 och Token-header). */
 export async function britpartFetch(path: string, init?: RequestInit) {
-  const url =
-    path.startsWith("http")
-      ? path
-      : `${BRITPART_BASE.replace(/\/$/, "")}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
+  const url = path.startsWith("http")
+    ? path
+    : `${BRITPART_BASE}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
 
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
-    "Content-Type": "application/json",
     Token: BRITPART_TOKEN,
   };
 
@@ -52,28 +43,28 @@ export async function britpartFetch(path: string, init?: RequestInit) {
   return res;
 }
 
-/** Hämtar EN kategori (kan vara förälder eller blad) */
-export async function getCategory(id: number): Promise<BritpartCategoryResponse> {
-  const res = await britpartFetch(`/part/getcategories?id=${id}`);
-  return safeJson(res) as Promise<BritpartCategoryResponse>;
+/** Hämta EN kategori (förälder eller blad) – korrekt param är categoryId. */
+export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
+  const res = await britpartFetch(`/part/getcategories?categoryId=${encodeURIComponent(categoryId)}`);
+  return safeJson<BritpartCategoryResponse>(res);
 }
 
-/** Hämtar alla top-level subkategorier (för UI-listan) */
-export async function getTopSubcategories(): Promise<Array<{ id: number; name: string }>> {
-  // All Parts => id 3 innehåller top-level subcategories
-  const res = await britpartFetch("/part/getcategories?id=3");
-  const data = (await safeJson(res)) as BritpartCategoryResponse;
+/** Hämta top‑level underkategorier (dvs barn till All Parts id=3) som {id,name}. */
+export async function getRootCategories(): Promise<Array<{ id: number; name: string }>> {
+  const res = await britpartFetch("/part/getcategories?categoryId=3");
+  const data = await safeJson<BritpartCategoryResponse>(res);
 
-  const items =
-    data.subcategories?.map((s) => ({ id: s.id, name: s.title ?? String(s.id) })) ?? [];
-
-  return items;
+  const subs = Array.isArray((data as any).subcategories) ? (data as any).subcategories : [];
+  return subs.map((s: any) => ({
+    id: Number(s.id),
+    name: String(s.title ?? s.name ?? "").trim(),
+  }));
 }
 
-/** Cache så vi inte slår samma kategori flera gånger i rekursionen */
+/** Cache för att undvika upprepade hämtningar i rekursionen. */
 const catCache = new Map<number, BritpartCategoryResponse>();
 
-/** Hämta partCodes rekursivt för EN kategori-id */
+/** Rekursivt samla partCodes för EN kategori. */
 async function collectPartCodesFrom(catId: number, seen: Set<number>): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
@@ -84,53 +75,37 @@ async function collectPartCodesFrom(catId: number, seen: Set<number>): Promise<s
     catCache.set(catId, cat);
   }
 
-  const codes: string[] = [];
+  const out: string[] = [];
 
-  // 1) Om denna kategori har egna partCodes -> använd dem
-  if (Array.isArray(cat.partCodes) && cat.partCodes.length) {
-    codes.push(...cat.partCodes);
-  }
+  // 1) egna koder
+  if (Array.isArray(cat.partCodes) && cat.partCodes.length) out.push(...cat.partCodes);
 
-  // 2) Om den har inbäddade subcategories -> kolla dem
+  // 2) inbäddade subcategories (om de råkar finnas)
   if (Array.isArray(cat.subcategories) && cat.subcategories.length) {
     for (const sc of cat.subcategories) {
-      if (Array.isArray(sc.partCodes) && sc.partCodes.length) {
-        codes.push(...sc.partCodes);
-      }
-      // subcategories kan i vissa svar också ha egna subcategoryIds
+      if (Array.isArray(sc.partCodes) && sc.partCodes.length) out.push(...sc.partCodes);
       if (Array.isArray(sc.subcategoryIds) && sc.subcategoryIds.length) {
         for (const subId of sc.subcategoryIds) {
-          const inner = await collectPartCodesFrom(subId, seen);
-          codes.push(...inner);
+          out.push(...(await collectPartCodesFrom(Number(subId), seen)));
         }
       }
     }
   }
 
-  // 3) Om den har subcategoryIds -> gå rekursivt
+  // 3) länkar till barns id:n
   if (Array.isArray(cat.subcategoryIds) && cat.subcategoryIds.length) {
     for (const subId of cat.subcategoryIds) {
-      const inner = await collectPartCodesFrom(subId, seen);
-      codes.push(...inner);
+      out.push(...(await collectPartCodesFrom(Number(subId), seen)));
     }
   }
 
-  return codes;
+  return out;
 }
 
-/**
- * Publik funktion: ge mig ALLA partCodes för EN eller FLERA kategorier (rekursivt).
- * Returnerar unika koder (case-sensitivt).
- */
+/** Publik: hämta alla partCodes (unika) för en lista med kategori‑ID:n. */
 export async function britpartGetPartCodesForCategories(categoryIds: number[]): Promise<string[]> {
   const seen = new Set<number>();
-  const codes: string[] = [];
-
-  for (const id of categoryIds) {
-    const c = await collectPartCodesFrom(Number(id), seen);
-    codes.push(...c);
-  }
-
-  // unika
-  return Array.from(new Set(codes));
+  const acc: string[] = [];
+  for (const id of categoryIds) acc.push(...(await collectPartCodesFrom(Number(id), seen)));
+  return Array.from(new Set(acc));
 }
