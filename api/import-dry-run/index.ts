@@ -1,62 +1,53 @@
 // api/import-dry-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { collectPartCodesFrom } from "../shared/britpart";
-import { wcFindProductBySku } from "../shared/wc";
+import { collectPartCodesForSubcategoryIds } from "../shared/britpart";
 
-type Body = { subcategoryIds: Array<string | number> };
+type Body = {
+  subcategoryIds?: Array<number | string>; // valda ID från UI
+};
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
 app.http("import-dry-run", {
   route: "import-dry-run",
-  methods: ["POST", "OPTIONS", "GET"],
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
-    if (req.method === "GET") return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: CORS };
+    if (req.method === "GET")     return { status: 200, jsonBody: { ok: true, name: "import-dry-run" }, headers: CORS };
 
     try {
       const body = (await req.json()) as Body;
-      const ids = (body?.subcategoryIds || []).map((x) => Number(x)).filter(Boolean);
-      if (!ids.length) return { status: 400, jsonBody: { error: "missing subcategoryIds" }, headers: CORS };
+      const ids = Array.isArray(body?.subcategoryIds) ? body!.subcategoryIds! : [];
 
-      const t0 = Date.now();
-      const allCodes = new Set<string>();
-      const visited = new Set<number>();
-
-      for (const id of ids) {
-        const { partCodes, visited: v } = await collectPartCodesFrom(id);
-        partCodes.forEach((c) => allCodes.add(c));
-        v.forEach((n) => visited.add(n));
+      if (ids.length === 0) {
+        return {
+          status: 400,
+          jsonBody: { error: "Saknar subcategoryIds (array av id:n)" },
+          headers: CORS,
+        };
       }
 
-      let exists = 0;
-      let missing = 0;
-      for (const code of allCodes) {
-        const p = await wcFindProductBySku(code);
-        if (p) exists++; else missing++;
-      }
+      // Hämta alla partnummer från valda underkategorier
+      const codes = await collectPartCodesForSubcategoryIds(ids);
 
+      // Svara med en lättöverskådlig sammanställning (dry-run, ingen WC-ändring)
       return {
         status: 200,
         jsonBody: {
           ok: true,
-          summary: { create: missing, update: exists, skip: 0 },
-          counts: {
-            inputSubcategories: ids.length,
-            discoveredSubcategories: visited.size,
-            uniquePartCodes: allCodes.size,
-          },
-          elapsedMs: Date.now() - t0,
+          selectedSubcategories: ids.length,
+          uniquePartCodes: codes.size,
+          sample: [...codes].slice(0, 20), // skicka med 20 st för insyn
         },
         headers: CORS,
       };
     } catch (e: any) {
-      ctx.error(e);
+      ctx.error("import-dry-run failed", e);
       return { status: 500, jsonBody: { error: e?.message || String(e) }, headers: CORS };
     }
   },

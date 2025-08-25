@@ -1,37 +1,62 @@
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+// api/britpart-subcategories/index.ts
+import {
+  app,
+  HttpRequest,
+  HttpResponseInit,
+  InvocationContext,
+} from "@azure/functions";
 import { britpartJson } from "../shared/britpart";
 
-const CORS = {
+const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
+
+interface BritpartSubcategory {
+  id: number | string;
+  title?: string;
+  name?: string;
+}
 
 app.http("britpart-subcategories", {
   route: "britpart-subcategories",
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+  handler: async (
+    req: HttpRequest,
+    _ctx: InvocationContext
+  ): Promise<HttpResponseInit> => {
+    if (req.method === "OPTIONS") {
+      return { status: 200, headers: CORS };
+    }
 
     try {
-      // Parent category "All Parts" is id=3
-      const rootId = Number(req.query.get("rootId") ?? 3);
+      // 3 = "All Parts" på Britpart – innehåller subcategories
+      const root = await britpartJson("part/getcategories?categoryId=3");
 
-      // Britpart endpoint that returns category + nested "subcategories"
-      const data = await britpartJson<{ subcategories?: any[] }>("/part/getcategories", {
-        categoryId: rootId,
-      });
+      const subs: BritpartSubcategory[] = Array.isArray(root?.subcategories)
+        ? root.subcategories
+        : [];
 
-      const items =
-        (data?.subcategories ?? []).map((s: any) => ({
-          id: String(s.id),
-          name: String(s.title ?? s.name ?? s.id),
-        })) ?? [];
+      const items: { id: string; name: string }[] = subs
+        .map((s) => ({
+          id: String(s?.id ?? ""),
+          name: String(s?.title ?? s?.name ?? ""),
+        }))
+        .filter((x: { id: string; name: string }) => x.id && x.name);
 
-      return { status: 200, jsonBody: { items }, headers: CORS };
+      return {
+        status: 200,
+        jsonBody: { items },
+        headers: CORS,
+      };
     } catch (e: any) {
-      return { status: 500, jsonBody: { error: e?.message || String(e) }, headers: CORS };
+      return {
+        status: 500,
+        jsonBody: { error: e?.message ?? String(e) },
+        headers: CORS,
+      };
     }
   },
 });
