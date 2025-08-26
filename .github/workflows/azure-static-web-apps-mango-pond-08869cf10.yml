@@ -4,29 +4,66 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [ opened, synchronize, reopened, closed ]
     branches: [ main ]
 
 jobs:
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
 
-      - name: Build & Deploy
+      # ---------- Bygg FRONTEND (Vite i repo-roten) ----------
+      - name: Setup Node (App)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install & Build App
+        working-directory: .
+        run: |
+          npm ci
+          npm run build
+
+      # ---------- Bygg API (TypeScript -> api/dist) ----------
+      - name: Setup Node (API)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install & Build API
+        working-directory: ./api
+        run: |
+          npm ci
+          npm run clean
+          npm run build
+        # Förväntar sig att build skapar:
+        # api/dist/host.json
+        # api/dist/<function>/index.js + function.json
+
+      # ---------- Deploy färdiga artefakter ----------
+      - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: upload
-          app_location: "/"          # frontenden ligger i repo-roten
-          output_location: "dist"    # Vite-output
-          api_location: "api"        # Functions-mappen
-          
+          # FRONTEND
+          app_location: "/"           # repo-rot
+          output_location: "dist"     # Vite-output
+          skip_app_build: true        # vi byggde ovan
+          # API
+          api_location: "api/dist"    # byggd Functions-mapp
+          skip_api_build: true        # skippa Oryx-bygge av API
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
