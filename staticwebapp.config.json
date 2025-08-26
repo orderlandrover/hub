@@ -4,7 +4,14 @@
     {
       "route": "/api/*",
       "allowedRoles": [ "anonymous" ]
-    }
+    },
+
+    { "route": "/products-list", "rewrite": "/api/products-list" },
+    { "route": "/wc-categories", "rewrite": "/api/wc-categories" },
+    { "route": "/publish", "rewrite": "/api/publish" },
+    { "route": "/unpublish", "rewrite": "/api/unpublish" },
+    { "route": "/update-price", "rewrite": "/api/update-price" },
+    { "route": "/set-category", "rewrite": "/api/set-category" }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",

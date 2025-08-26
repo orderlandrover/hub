@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
+    "engines": {
+    "node": ">=20.19.0"
+  },
   "main": "dist/index.js",
   "scripts": {
     "clean": "rimraf dist .tsbuildinfo",
