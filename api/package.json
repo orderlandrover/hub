@@ -3,12 +3,10 @@
   "private": true,
   "type": "commonjs",
   "main": "dist/index.js",
-  "engines": {
-    "node": ">=20 <21"
-  },
+  "engines": { "node": ">=20 <21" },
   "scripts": {
     "clean": "rimraf dist .tsbuildinfo",
-    "build": "tsc -p . && cpy \"**/function.json\" dist --parents && cpy \"host.json\" dist",
+    "build": "tsc -p . && cpy \"**/function.json\" dist --parents && cpy \"host.json\" dist && cpy package.json dist",
     "start": "func start --javascript"
   },
   "dependencies": {
