@@ -58,13 +58,44 @@ function pickNumberLike(v: any) {
   return Number.isFinite(n) ? n : NaN;
 }
 function pickGbp(row: Record<string, any>) {
-  for (const k of PRICE_KEYS_GBP) {
-    const raw = getCI(row, k);
-    if (raw !== undefined) {
-      const n = pickNumberLike(raw);
+  // 1) Försök enligt vanliga prisnycklar (Price, GBP, RRP, etc.)
+  const PRICE_KEYS = ["Price","GBP","RRP","Price GBP","GBP Price","Unit Price","Net Price","List Price","Pris (GBP)","Pris GBP","RRP GBP"];
+  for (const k of PRICE_KEYS) {
+    const v = getCI(row, k);
+    if (v !== undefined) {
+      const n = pickNumberLike(v);
       if (Number.isFinite(n)) return n;
     }
   }
+
+  // 2) SPECIALFALL för din CSV: många rader har prisvärdet i "Description" p.g.a. fel headerordning.
+  //    - Om "Price" inte är numeriskt (dvs text som "SP CLUTCH ..."/"EA")
+  //    - och "Description" ÄR numeriskt (t.ex. 57.42)
+  //    -> tolka Description som pris.
+  const priceRaw = getCI(row, "Price");
+  const priceNum = pickNumberLike(priceRaw);
+  const descRaw  = getCI(row, "Description");
+  const descNum  = pickNumberLike(descRaw);
+
+  // Om "Per" ser ut som en enhetskod ("EA", "HD", "SET", "PK", ...) stärker vi hypotesen att tredje kolumnen var det riktiga priset.
+  const per = String(getCI(row, "Per") ?? "").trim();
+  const looksLikeUnit = /^(EA|HD|SET|PK|PR|PAIR|KIT|BOX|PCS|PC|UNIT|ST)$/i.test(per);
+
+  if (!Number.isFinite(priceNum) && Number.isFinite(descNum)) {
+    return descNum; // priset ligger under "Description" i just denna CSV
+  }
+
+  // 3) Sista fallback: skanna alla fält och ta första "rimliga" priset (0.01–100000) om vi missat alla ovan.
+  for (const key of Object.keys(row)) {
+    const n = pickNumberLike(row[key]);
+    if (Number.isFinite(n) && n >= 0.01 && n <= 100000) {
+      // Undvik att råka ta t.ex. "UOI=1", men om vi har en units-kolumn som ser rimlig ut accepterar vi detta som sista utväg.
+      if (key.toLowerCase() !== "uoi" || n > 1.0) {
+        return n;
+      }
+    }
+  }
+
   return NaN;
 }
 function pickSek(row: Record<string, any>) {
@@ -108,7 +139,7 @@ app.http("price-upload", {
       // fallback om UTF-8 blir konstigt
       if ((csvText.match(/\uFFFD/g) || []).length > 10) csvText = buf.toString("latin1");
 
-      const delimiter = detectDelimiter(csvText);
+      const delimiter = ",";
       const rows = parse(csvText, {
         columns: (h: string[]) => h.map(normHdr),
         delimiter,
