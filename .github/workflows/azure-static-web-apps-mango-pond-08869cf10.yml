@@ -28,12 +28,11 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install & Build App
-        working-directory: .
         run: |
           npm ci
           npm run build
 
-      # ---------- Build API (TypeScript -> dist) ----------
+      # ---------- Build API to dist (lokalt i jobbet, inte Oryx) ----------
       - name: Setup Node (API)
         uses: actions/setup-node@v4
         with:
@@ -52,33 +51,28 @@ jobs:
         run: |
           echo "== APP =="
           ls -la dist || true
-          echo "== API source =="
-          ls -la api || true
           echo "== API dist =="
           ls -la api/dist || true
-          echo "== function.json files in api/dist =="
+          echo "== function.json in api/dist =="
           find api/dist -maxdepth 2 -type f -name "function.json" -print || true
           echo "== host.json =="
-          cat api/host.json || true
-          echo "== api/package.json =="
-          cat api/package.json || true
+          cat api/dist/host.json || true
+          echo "== dist/package.json =="
+          cat api/dist/package.json || true
 
-      # ---------- Deploy ----------
+      # ---------- Deploy (SKIPPA alla Oryx-builds) ----------
       - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
-
-          # Frontend (byggd ovan)
+          # Frontend
           app_location: "/"
           output_location: "dist"
           skip_app_build: true
-
-          # API: låt actionen bygga från källan (språket känns igen via api/package.json)
-          api_location: "api"
-          skip_api_build: false
-          api_build_command: "npm ci && npm run clean && npm run build"
+          # API – peka på dist och skippa API-build helt
+          api_location: "api/dist"
+          skip_api_build: true
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -89,6 +83,5 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: close
-          # VS Code-lint vill ibland ha dessa även vid 'close':
           app_location: "/"
           output_location: "dist"
