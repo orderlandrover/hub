@@ -578,34 +578,32 @@ function ImportTab(): React.ReactElement {
   const [dry, setDry] = useState<boolean>(true);
 
   // Britpart underkategorier
-type BPSub = { id: number; name: string; hasChildren?: boolean };
-const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
-const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
+  type BPSub = { id: number; name: string; hasChildren?: boolean };
+  const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
+  const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
-useEffect(() => {
-  (async () => {
-    try {
-      // parentId=3 är root – vårt API klarar default 3, men vi anger den tydligt
-      const res = await fetch("/api/britpart-subcategories?parentId=3");
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/britpart-subcategories?parentId=3");
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(txt || `HTTP ${res.status}`);
+        }
+        const j = await res.json();
+        const rows: BPSub[] = Array.isArray(j?.children)
+          ? j.children.map((c: any) => ({
+              id: Number(c.id),
+              name: String(c.title ?? c.name ?? c.id),
+              hasChildren: !!c.hasChildren,
+            }))
+          : [];
+        setBpSubs(rows);
+      } catch (e: any) {
+        addLog(`Fel att hämta underkategorier: ${e?.message || String(e)}`);
       }
-      const j = await res.json();
-      // API:t returnerar { ok, parentId, count, children: [{id, title, hasChildren}] }
-      const rows: BPSub[] = Array.isArray(j?.children)
-        ? j.children.map((c: any) => ({
-            id: Number(c.id),
-            name: String(c.title ?? c.name ?? c.id),
-            hasChildren: !!c.hasChildren,
-          }))
-        : [];
-      setBpSubs(rows);
-    } catch (e: any) {
-      addLog(`Fel att hämta underkategorier: ${e?.message || String(e)}`);
-    }
-  })();
-}, []);
+    })();
+  }, []);
 
   function addLog(s: string) {
     const stamp = new Date().toLocaleString();
@@ -629,39 +627,82 @@ useEffect(() => {
     return json as T;
   }
 
-  // ---- Prisfil
+  /** Kör hela Blob-flödet: SAS -> PUT -> server-bearbetning */
+  async function runBlobPriceImport(
+    file: File,
+    opts: {
+      fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
+      publish: boolean; dryRun: boolean;
+    },
+    addLogFn: (s: string) => void
+  ) {
+    const roundModeApi =
+      opts.roundModeUI === "nearest" ? "near" :
+      opts.roundModeUI === "up" ? "up" :
+      opts.roundModeUI === "down" ? "down" : "near";
+    const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
+
+    addLogFn("Begär SAS-URL…");
+    const sasRes = await fetch("/api/price-upload-sas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name }),
+    });
+    const sasJson = await parseJsonRobust(sasRes);
+    if (!sasRes.ok || !sasJson?.ok) {
+      throw new Error(sasJson?.error || `SAS-fel: ${sasJson?.raw || ""}`);
+    }
+    const { sasUrl, blobUrl } = sasJson as { ok: boolean; sasUrl: string; blobUrl: string };
+    addLogFn("SAS mottagen.");
+
+    addLogFn("Laddar upp filen till Blob Storage…");
+    const put = await fetch(sasUrl, { method: "PUT", headers: { "x-ms-blob-type": "BlockBlob" }, body: file });
+    if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 500)}`);
+    addLogFn("Uppladdning klar.");
+
+    addLogFn("Startar server-bearbetning…");
+    const procRes = await fetch("/api/price-upload-from-blob", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        blobUrl,
+        fx: Number(opts.fx),
+        markupPct: Number(opts.markupPct),
+        roundMode: roundModeApi,
+        step: stepApi,
+        publish: !!opts.publish,
+        dryRun: !!opts.dryRun,
+        batchSize: 5000
+      })
+    });
+    const out = await parseJsonRobust(procRes);
+    if (!procRes.ok || !out?.ok) {
+      throw new Error(out?.error || `Bearbetning misslyckades: ${out?.raw || ""}`);
+    }
+
+    addLogFn(`KLART: total=${out.total}, updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`);
+    if (out.sample?.updates?.length) addLogFn(`Exempel uppdateringar: ${JSON.stringify(out.sample.updates)}`);
+    if (out.sample?.skipped?.length) addLogFn(`Exempel skippade: ${JSON.stringify(out.sample.skipped)}`);
+    if (out.sample?.errors?.length)  addLogFn(`Exempel fel: ${JSON.stringify(out.sample.errors)}`);
+  }
+
+  // ---- Prisfil via Blob/SAS (ersätter tidigare base64-uppladdning)
   async function handlePriceUpload(file: File) {
     try {
       setBusy(true);
-      addLog(`Laddar upp prisfil: ${file.name}`);
-
-      const base64 = await fileToBase64(file);
-      const apiRoundMode = roundMode === "nearest" ? "near" : roundMode;
-
-      const res = await fetch("/api/price-upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          base64,
-          fx: Number(fx),
-          markupPct: Number(markup),
-          roundMode: apiRoundMode,
-          step: Number(roundStep),
-          publish: !!pub,
-          dryRun: !!dry,
-        }),
-      });
-
-      const txt = await res.text();
-      const j = txt ? JSON.parse(txt) : {};
-      if (!res.ok) throw new Error(j?.error || txt || "Fel vid prisimport");
-
-      addLog(
-        `Prisimport OK: total=${j.total}, updated=${j.updated}, skipped=${j.skipped}, notFound=${j.notFound}, errors=${j.errors}`
+      addLog(`Vald fil: ${file.name}`);
+      await runBlobPriceImport(
+        file,
+        {
+          fx,
+          markupPct: markup,
+          roundModeUI: roundMode, // "nearest" | "up" | "down" | "none"
+          roundStep,
+          publish: pub,
+          dryRun: dry
+        },
+        addLog
       );
-      if (j.sample?.updates?.length) addLog(`Exempel uppdateringar: ${j.sample.updates.length} st`);
-      if (j.sample?.errors?.length) addLog(`Exempel fel: ${j.sample.errors.length} st`);
     } catch (e: any) {
       addLog(`Fel: ${e?.message || String(e)}`);
     } finally {
@@ -683,7 +724,6 @@ useEffect(() => {
     try {
       setBusy(true);
       addLog(`Dry-run: ${ids.join(", ")}`);
-      // VIKTIGT: backend vill ha { categoryIds }
       const j = await postJson<any>("/api/import-dry-run", { categoryIds: ids });
 
       const create = j?.summary?.create ?? j?.create ?? 0;
@@ -914,4 +954,15 @@ useEffect(() => {
       </section>
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/*                     Robust JSON-parse helper                        */
+/* ------------------------------------------------------------------ */
+
+/** Robust JSON-parse (visar råtext vid fel, t.ex. SWA "Backend call failure") */
+async function parseJsonRobust(res: Response): Promise<any> {
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { return { ok: false, error: `Failed to parse JSON (${res.status})`, raw: text }; }
 }

@@ -53,7 +53,10 @@ function pickSku(row: Record<string, any>) {
   return "";
 }
 function pickNumberLike(v: any) {
-  const s = String(v ?? "").replace(/\s/g, "").replace(",", ".").trim();
+  const s = String(v ?? "")
+    .replace(/\s/g, "")
+    .replace(/,/g, ".") // <- /g
+    .trim();
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : NaN;
 }
@@ -79,7 +82,7 @@ function pickGbp(row: Record<string, any>) {
 
   // Om "Per" ser ut som en enhetskod ("EA", "HD", "SET", "PK", ...) stärker vi hypotesen att tredje kolumnen var det riktiga priset.
   const per = String(getCI(row, "Per") ?? "").trim();
-  const looksLikeUnit = /^(EA|HD|SET|PK|PR|PAIR|KIT|BOX|PCS|PC|UNIT|ST)$/i.test(per);
+
 
   if (!Number.isFinite(priceNum) && Number.isFinite(descNum)) {
     return descNum; // priset ligger under "Description" i just denna CSV
