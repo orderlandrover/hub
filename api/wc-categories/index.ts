@@ -1,4 +1,4 @@
-// api/wc-categories1/index.ts
+// api/wc-categories/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { wcFetch, readJsonSafe } from "../shared/wc";
 
@@ -11,7 +11,7 @@ const CORS = {
 app.http("wc-categories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  route: "wc-categories1",
+  route: "wc-categories",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
@@ -43,7 +43,7 @@ app.http("wc-categories", {
 
       return { status: 200, headers: CORS, jsonBody: { ok: true, total: categories.length, categories } };
     } catch (e: any) {
-      ctx.error("wc-categories1 error", e);
+      ctx.error("wc-categories error", e);
       return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },
