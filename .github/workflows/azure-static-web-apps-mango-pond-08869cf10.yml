@@ -19,7 +19,7 @@ jobs:
           submodules: true
           lfs: false
 
-      # ---------- Bygg FRONTEND (Vite i repo-roten) ----------
+      # ---------- Bygg FRONTEND ----------
       - name: Setup Node (App)
         uses: actions/setup-node@v4
         with:
@@ -33,7 +33,7 @@ jobs:
           npm ci
           npm run build
 
-      # ---------- Bygg API (TypeScript -> api/dist) ----------
+      # ---------- Bygg API (från källan) ----------
       - name: Setup Node (API)
         uses: actions/setup-node@v4
         with:
@@ -47,30 +47,21 @@ jobs:
           npm ci
           npm run clean
           npm run build
-        # Förväntar sig att build skapar:
-        # api/dist/host.json
-        # api/dist/<function>/index.js + function.json
+        # Bygget skapar api/dist, men SWA kommer läsa språkinfo från api/package.json
 
-      # ---------- Deploy färdiga artefakter ----------
+      # ---------- Deploy ----------
       - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
-          # FRONTEND
-          app_location: "/"           # repo-rot
-          output_location: "dist"     # Vite-output
-          skip_app_build: true        # vi byggde ovan
-          # API
-          api_location: "api/dist"    # byggd Functions-mapp
-          skip_api_build: true        # skippa Oryx-bygge av API
 
-  close_pull_request_job:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Close PR env
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
-          action: close
+          # Frontend (vi byggde ovan)
+          app_location: "/"
+          output_location: "dist"
+          skip_app_build: true
+
+          # API: peka på KÄLLAN, låt actionen känna igen språk via package.json
+          api_location: "api"
+          # vi har redan kört "npm run build" ovan, så låt actionen skippa egen build
+          skip_api_build: true
