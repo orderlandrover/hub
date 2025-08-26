@@ -578,25 +578,34 @@ function ImportTab(): React.ReactElement {
   const [dry, setDry] = useState<boolean>(true);
 
   // Britpart underkategorier
-  type BPSub = { id: number; name: string };
-  const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
-  const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
+type BPSub = { id: number; name: string; hasChildren?: boolean };
+const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
+const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/britpart-subcategories");
-        if (!res.ok) throw new Error(await res.text());
-        const j = await res.json();
-        const items: BPSub[] = Array.isArray(j?.items)
-          ? j.items.map((x: any) => ({ id: Number(x.id), name: String(x.name ?? x.title ?? x.id) }))
-          : [];
-        setBpSubs(items);
-      } catch (e) {
-        addLog(`Fel att hämta underkategorier: ${(e as any)?.message ?? e}`);
+useEffect(() => {
+  (async () => {
+    try {
+      // parentId=3 är root – vårt API klarar default 3, men vi anger den tydligt
+      const res = await fetch("/api/britpart-subcategories?parentId=3");
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
       }
-    })();
-  }, []);
+      const j = await res.json();
+      // API:t returnerar { ok, parentId, count, children: [{id, title, hasChildren}] }
+      const rows: BPSub[] = Array.isArray(j?.children)
+        ? j.children.map((c: any) => ({
+            id: Number(c.id),
+            name: String(c.title ?? c.name ?? c.id),
+            hasChildren: !!c.hasChildren,
+          }))
+        : [];
+      setBpSubs(rows);
+    } catch (e: any) {
+      addLog(`Fel att hämta underkategorier: ${e?.message || String(e)}`);
+    }
+  })();
+}, []);
 
   function addLog(s: string) {
     const stamp = new Date().toLocaleString();
