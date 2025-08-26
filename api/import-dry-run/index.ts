@@ -1,27 +1,25 @@
-// ImportDryRun/index.ts
+// api/import-dry-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { britpartGetPartCodesForCategories } from "../shared/britpart";
 
 type Body = {
-  categoryIds?: number[]; // toppnivå eller mellan-nivå
+  categoryIds?: number[]; // Britpart underkategorier (IDs)
   debug?: boolean;
 };
 
-const CORS_HEADERS = {
+const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization"
 };
 
 app.http("import-dry-run", {
-  methods: ["POST", "OPTIONS"],
+  methods: ["POST", "OPTIONS", "GET"],
   authLevel: "anonymous",
   route: "import-dry-run",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    // Handle CORS preflight quickly
-    if (req.method === "OPTIONS") {
-      return { status: 204, headers: CORS_HEADERS };
-    }
+    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
+    if (req.method === "GET")     return { status: 200, headers: CORS, jsonBody: { ok: true, name: "import-dry-run" } };
 
     const started = Date.now();
 
@@ -30,29 +28,28 @@ app.http("import-dry-run", {
       try {
         body = (await req.json()) as Body;
       } catch {
-        // tom body eller ej JSON
         return {
           status: 400,
-          headers: CORS_HEADERS,
-          jsonBody: { ok: false, error: "Request body måste vara JSON med { categoryIds: number[] }" },
+          headers: CORS,
+          jsonBody: { ok: false, error: "Body måste vara JSON. Ex: { \"categoryIds\": [44,45] }" }
         };
       }
 
       const categoryIds = (body?.categoryIds ?? [])
-        .map((n) => Number(n))
+        .map(Number)
         .filter((n) => Number.isFinite(n));
 
-      if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
-        return { status: 400, headers: CORS_HEADERS, jsonBody: { ok: false, error: "categoryIds (number[]) krävs" } };
+      if (categoryIds.length === 0) {
+        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "categoryIds (number[]) krävs" } };
       }
 
-      // REKURSIV expansion → alla bladens partCodes
-      const partCodesRaw = await britpartGetPartCodesForCategories(categoryIds);
+      // Expandera rekursivt -> alla part codes under dessa kategorier
+      const raw = await britpartGetPartCodesForCategories(categoryIds);
 
-      // Säkerställ unika koder & städa upp whitespace
+      // Städa & unika koder
       const partCodes = Array.from(
         new Set(
-          (partCodesRaw ?? [])
+          (raw ?? [])
             .filter((s) => typeof s === "string")
             .map((s) => s.trim())
             .filter((s) => s.length > 0)
@@ -61,46 +58,24 @@ app.http("import-dry-run", {
 
       const total = partCodes.length;
 
-      // Debugdetaljer
-      const elapsedMs = Date.now() - started;
-      const debugPayload: Record<string, any> | undefined = body?.debug
-        ? {
-            inCategoryIds: categoryIds,
-            expandedCodesCount: total,
-            elapsedMs,
-          }
+      const debug: Record<string, any> | undefined = body?.debug
+        ? { inCategoryIds: categoryIds, expandedCodesCount: total, elapsedMs: Date.now() - started }
         : undefined;
-
-      // Heuristisk varning om något uppenbart är fel
-      const warnings: string[] = [];
-      if (body?.debug && total <= categoryIds.length) {
-        warnings.push(
-          "Lågt antal produkter relativt antal categoryIds. Kontrollera att du kör senaste 'api/shared/britpart.ts' med normalizeCategory + rekursion på sc.id."
-        );
-      }
 
       const resp = {
         ok: true,
         total,
-        summary: {
-          create: 0,     // uppdatera när du jämför mot Woo
-          update: total,
-          skip: 0,
-        },
+        summary: { create: 0, update: total, skip: 0 }, // indikativt – verkliga siffror kommer i import-run
         sample: partCodes.slice(0, 10).sort(),
-        debug: debugPayload,
-        warnings: warnings.length ? warnings : undefined,
+        debug
       };
 
-      if (body?.debug) {
-        ctx.log("Dry-run DEBUG", resp.debug);
-        if (warnings.length) ctx.log("Dry-run WARN", warnings);
-      }
+      if (debug) ctx.log("dry-run debug", debug);
 
-      return { status: 200, headers: CORS_HEADERS, jsonBody: resp };
+      return { status: 200, headers: CORS, jsonBody: resp };
     } catch (e: any) {
-      ctx.error("Dry-run error", e);
-      return { status: 500, headers: CORS_HEADERS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
+      ctx.error("import-dry-run error", e);
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
-  },
+  }
 });

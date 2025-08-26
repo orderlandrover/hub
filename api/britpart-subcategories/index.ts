@@ -1,14 +1,23 @@
-// Britpart-subcategories/index.ts
+// api/britpart-subcategories/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getCategory } from "../shared/britpart";
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
 
 app.http("Britpart-subcategories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  route: "britpart-subcategories",
+  route: "britpart-subcategories", // <-- bindestreck-standard
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
+
     try {
-      const parentId = Number(req.query.get("parentId") ?? "3");
+      // Stöd både ?parentId= och ?id= (bakåtkomp)
+      const parentId = Number(req.query.get("parentId") ?? req.query.get("id") ?? "3");
       const node = await getCategory(parentId);
 
       const ids = Array.isArray(node.subcategoryIds) ? node.subcategoryIds : [];
@@ -30,10 +39,10 @@ app.http("Britpart-subcategories", {
         a.title.localeCompare(b.title, "sv")
       );
 
-      return { status: 200, jsonBody: { ok: true, parentId, count: children.length, children } };
+      return { status: 200, headers: CORS, jsonBody: { ok: true, parentId, count: children.length, children } };
     } catch (e: any) {
-      ctx.error("Britpart-subcategories error", e);
-      return { status: 500, jsonBody: { ok: false, error: String(e?.message ?? e) } };
+      ctx.error("Britpart.Subcategories error", e);
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },
 });
