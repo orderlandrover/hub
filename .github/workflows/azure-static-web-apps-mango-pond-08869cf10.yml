@@ -4,8 +4,8 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    types: [ opened, synchronize, reopened, closed ]
     branches: [ main ]
+    types: [ opened, synchronize, reopened, closed ]
 
 jobs:
   build_and_deploy_job:
@@ -19,7 +19,7 @@ jobs:
           submodules: true
           lfs: false
 
-      # ---------- Bygg FRONTEND ----------
+      # ---------- Build FRONTEND ----------
       - name: Setup Node (App)
         uses: actions/setup-node@v4
         with:
@@ -33,7 +33,7 @@ jobs:
           npm ci
           npm run build
 
-      # ---------- Bygg API (från källan) ----------
+      # ---------- Build API (TypeScript -> dist) ----------
       - name: Setup Node (API)
         uses: actions/setup-node@v4
         with:
@@ -47,7 +47,21 @@ jobs:
           npm ci
           npm run clean
           npm run build
-        # Bygget skapar api/dist, men SWA kommer läsa språkinfo från api/package.json
+
+      - name: Verify artifacts
+        run: |
+          echo "== APP =="
+          ls -la dist || true
+          echo "== API source =="
+          ls -la api || true
+          echo "== API dist =="
+          ls -la api/dist || true
+          echo "== function.json files in api/dist =="
+          find api/dist -maxdepth 2 -type f -name "function.json" -print || true
+          echo "== host.json =="
+          cat api/host.json || true
+          echo "== api/package.json =="
+          cat api/package.json || true
 
       # ---------- Deploy ----------
       - name: Deploy to Azure Static Web Apps
@@ -56,12 +70,25 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
 
-          # Frontend (vi byggde ovan)
+          # Frontend (byggd ovan)
           app_location: "/"
           output_location: "dist"
           skip_app_build: true
 
-          # API: peka på KÄLLAN, låt actionen känna igen språk via package.json
+          # API: låt actionen bygga från källan (språket känns igen via api/package.json)
           api_location: "api"
-          # vi har redan kört "npm run build" ovan, så låt actionen skippa egen build
-          skip_api_build: true
+          skip_api_build: false
+          api_build_command: "npm ci && npm run clean && npm run build"
+
+  close_pull_request_job:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close PR env
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
+          action: close
+          # VS Code-lint vill ibland ha dessa även vid 'close':
+          app_location: "/"
+          output_location: "dist"
