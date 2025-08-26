@@ -3,7 +3,7 @@ import "./ping";
 import "./britpart-products";
 import "./britpart-categories";
 import "./britpart-getall";
-import "./britpart-subcategories";
+import "./britpart/subcategories";
 import "./britpart-probe";
 import "./products-list";
 import "./products-update";        // (per-ID PUT, om du redan har den)

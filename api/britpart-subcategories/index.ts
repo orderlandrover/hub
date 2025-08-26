@@ -2,7 +2,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getCategory } from "../shared/britpart";
 
-app.http("Britpart-Subcategories", {
+app.http("Britpart/Subcategories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   route: "britpart/subcategories",
