@@ -8,20 +8,19 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-app.http("Britpart-subcategories", {
+app.http("britpart-subcategories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  route: "britpart-subcategories", // <-- bindestreck-standard
+  route: "britpart-subcategories",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
     try {
-      // Stöd både ?parentId= och ?id= (bakåtkomp)
-      const parentId = Number(req.query.get("parentId") ?? req.query.get("id") ?? "3");
+      const parentId = Number(req.query.get("parentId") ?? "3");
       const node = await getCategory(parentId);
 
-      const ids = Array.isArray(node.subcategoryIds) ? node.subcategoryIds : [];
-      const embed = Array.isArray(node.subcategories) ? node.subcategories : [];
+      const ids: number[] = Array.isArray(node?.subcategoryIds) ? node.subcategoryIds : [];
+      const embed: any[] = Array.isArray(node?.subcategories) ? node.subcategories : [];
 
       const map = new Map<number, { id: number; title: string; hasChildren: boolean }>();
       for (const sc of embed) {
@@ -41,7 +40,7 @@ app.http("Britpart-subcategories", {
 
       return { status: 200, headers: CORS, jsonBody: { ok: true, parentId, count: children.length, children } };
     } catch (e: any) {
-      ctx.error("Britpart.Subcategories error", e);
+      ctx.error("britpart-subcategories error", e);
       return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },

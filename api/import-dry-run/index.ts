@@ -3,23 +3,22 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import { britpartGetPartCodesForCategories } from "../shared/britpart";
 
 type Body = {
-  categoryIds?: number[]; // Britpart underkategorier (IDs)
+  categoryIds?: number[];
   debug?: boolean;
 };
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 app.http("import-dry-run", {
-  methods: ["POST", "OPTIONS", "GET"],
+  methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
   route: "import-dry-run",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
-    if (req.method === "GET")     return { status: 200, headers: CORS, jsonBody: { ok: true, name: "import-dry-run" } };
 
     const started = Date.now();
 
@@ -31,7 +30,7 @@ app.http("import-dry-run", {
         return {
           status: 400,
           headers: CORS,
-          jsonBody: { ok: false, error: "Body måste vara JSON. Ex: { \"categoryIds\": [44,45] }" }
+          jsonBody: { ok: false, error: "Body måste vara JSON: { categoryIds: number[] }" },
         };
       }
 
@@ -43,39 +42,31 @@ app.http("import-dry-run", {
         return { status: 400, headers: CORS, jsonBody: { ok: false, error: "categoryIds (number[]) krävs" } };
       }
 
-      // Expandera rekursivt -> alla part codes under dessa kategorier
-      const raw = await britpartGetPartCodesForCategories(categoryIds);
-
-      // Städa & unika koder
+      const partCodesRaw = await britpartGetPartCodesForCategories(categoryIds);
       const partCodes = Array.from(
-        new Set(
-          (raw ?? [])
-            .filter((s) => typeof s === "string")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0)
-        )
+        new Set((partCodesRaw ?? [])
+          .filter((s) => typeof s === "string")
+          .map((s) => s.trim())
+          .filter(Boolean))
       );
 
       const total = partCodes.length;
-
-      const debug: Record<string, any> | undefined = body?.debug
-        ? { inCategoryIds: categoryIds, expandedCodesCount: total, elapsedMs: Date.now() - started }
-        : undefined;
+      const elapsedMs = Date.now() - started;
 
       const resp = {
         ok: true,
         total,
-        summary: { create: 0, update: total, skip: 0 }, // indikativt – verkliga siffror kommer i import-run
+        summary: { create: 0, update: total, skip: 0 },
         sample: partCodes.slice(0, 10).sort(),
-        debug
+        debug: body?.debug ? { inCategoryIds: categoryIds, expandedCodesCount: total, elapsedMs } : undefined,
       };
 
-      if (debug) ctx.log("dry-run debug", debug);
+      if (body?.debug) ctx.log("Dry-run debug:", resp.debug);
 
       return { status: 200, headers: CORS, jsonBody: resp };
     } catch (e: any) {
       ctx.error("import-dry-run error", e);
       return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
-  }
+  },
 });
