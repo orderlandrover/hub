@@ -12,21 +12,41 @@ jobs:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
 
-      - name: Build & Deploy (Oryx builds app + api)
+      # Bygg Functions (TypeScript -> api/dist) innan deploy
+      - name: Build API (predeploy)
+        working-directory: ./api
+        run: |
+          npm ci
+          npm run build
+
+      # (Valfritt) Bygg frontend i förväg – Oryx kan också köra detta via app_build_command nedan
+      # - name: Build App (predeploy)
+      #   working-directory: .
+      #   run: |
+      #     npm ci
+      #     npm run build --if-present
+
+      - name: Build & Deploy (SWA)
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
-          app_location: "/"      # frontend i repo-roten
-          output_location: "dist"
-          api_location: "api"    # API-källkod – Oryx bygger
-          app_build_command: "npm ci && npm run build --if-present"           # <— NY
-          api_build_command: "cd api && npm ci && npm run build --if-present" # <— NY
+
+          # FRONTEND
+          app_location: "/"              # där din frontend package.json ligger
+          output_location: "dist"        # ta bort om din frontend inte producerar 'dist'
+          app_build_command: "npm ci && npm run build --if-present"
+
+          # FUNCTIONS (deploya färdigkompilerade JS i api/dist)
+          api_location: "api/dist"
+          skip_api_build: true           # vi byggde API:t ovan
+          
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -39,4 +59,5 @@ jobs:
           action: close
           app_location: "/"
           output_location: "dist"
-          api_location: "api"
+          api_location: "api/dist"
+          skip_api_build: true
