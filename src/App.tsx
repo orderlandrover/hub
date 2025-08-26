@@ -77,7 +77,7 @@ export default function App(): React.ReactElement {
       <header className="ui-header sticky top-0 z-20 shadow">
         <div className="w-full px-6 py-4 flex items-center justify-between">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
-            Björklin Motor - Landrover
+            Björklin Motor
           </h1>
           <a
             href="https://landroverdelar.se"
