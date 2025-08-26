@@ -171,7 +171,7 @@ Skapa en mapp api/ i repo't. Kör serverless Functions (Node 20/TS). Exempel på
 
 1) Lista Britpart‑subkategorier
 
-GET /api/britpart/subcategories
+GET /api/britpart-subcategories
 
 Hämtar och returnerar { items: [{id, name}, ...] }
 
