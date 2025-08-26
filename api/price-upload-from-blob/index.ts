@@ -184,10 +184,28 @@ app.http("price-upload-from-blob", {
   }
 });
 
-// helper: stream -> string
-async function streamToString(readable: NodeJS.ReadableStream | null): Promise<string> {
-  if (!readable) return "";
+// helper: stream -> string (tål Node stream, Web ReadableStream, null/undefined)
+async function streamToString(
+  body: NodeJS.ReadableStream | ReadableStream<Uint8Array> | null | undefined
+): Promise<string> {
+  if (!body) return "";
+
+  // Web ReadableStream (har getReader)
+  if (typeof (body as any).getReader === "function") {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  // NodeJS.ReadableStream (async iterator)
   const chunks: Uint8Array[] = [];
-  for await (const chunk of readable) chunks.push(Buffer.from(chunk));
+  for await (const chunk of body as any) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
   return Buffer.concat(chunks).toString("utf8");
 }

@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { BlobSASPermissions, BlobServiceClient, StorageSharedKeyCredential, generateBlobSASQueryParameters } from "@azure/storage-blob";
-import crypto from "crypto";
+// (valfritt ESM-vänligt import-namn)
+import crypto from "node:crypto"; // <-- byt till node:crypto för NodeNext/ESM
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -16,8 +17,9 @@ app.http("price-upload-sas", {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
 
     try {
-      const { filename } = await req.json().catch(() => ({}));
-      const safeName = (filename || "prices.csv").replace(/[^\w.\-]/g, "_");
+      const body = (await req.json().catch(() => ({}))) as { filename?: string };
+      const safeName = String(body.filename || "prices.csv").replace(/[^\w.\-]/g, "_");
+
 
       // Kräver att du sätter följande app settings:
       // STORAGE_ACCOUNT_NAME, STORAGE_ACCOUNT_KEY, STORAGE_CONTAINER (t.ex. "uploads")

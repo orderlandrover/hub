@@ -48,17 +48,7 @@ function normalizeCategories(raw: any): WCCategory[] {
 /*                         Små hjälpare                                */
 /* ------------------------------------------------------------------ */
 
-async function fileToBase64(file: File): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => {
-      const s = String(fr.result || "");
-      resolve(s.includes(",") ? s.split(",")[1] : s);
-    };
-    fr.onerror = reject;
-    fr.readAsDataURL(file);
-  });
-}
+
 
 const brand = {
   card: "bg-white rounded-2xl shadow-sm border",
