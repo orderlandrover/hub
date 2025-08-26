@@ -8,7 +8,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-app.http("wc-categories1", {
+app.http("wc-categories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   route: "wc-categories1",
