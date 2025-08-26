@@ -25,6 +25,8 @@ jobs:
           app_location: "/"      # frontend i repo-roten
           output_location: "dist"
           api_location: "api"    # API-källkod – Oryx bygger
+          app_build_command: "npm ci && npm run build --if-present"           # <— NY
+          api_build_command: "cd api && npm ci && npm run build --if-present" # <— NY
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
