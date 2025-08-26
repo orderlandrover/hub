@@ -1,4 +1,4 @@
-// Britpart.Subcategories/index.ts
+// Britpart-subcategories/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getCategory } from "../shared/britpart";
 
@@ -32,7 +32,7 @@ app.http("Britpart-subcategories", {
 
       return { status: 200, jsonBody: { ok: true, parentId, count: children.length, children } };
     } catch (e: any) {
-      ctx.error("Britpart.Subcategories error", e);
+      ctx.error("Britpart-subcategories error", e);
       return { status: 500, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },
