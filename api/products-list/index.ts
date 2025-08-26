@@ -1,87 +1,105 @@
+// api/products-list/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { wcFetch } from "../shared/wc";
-
-type WCProduct = {
-  id: number;
-  name: string;
-  sku: string;
-  status: string;
-  regular_price?: string;
-  stock_quantity?: number | null;
-  stock_status?: string;
-  categories?: { id: number; name?: string }[];
-  images?: { src: string }[];
-};
+import { wcFetch, readJsonSafe } from "../shared/wc";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
+function parsePerPage(s: string | null): number {
+  // UI verkar skicka t.ex. "per-page-10". Tillåt även rena tal.
+  if (!s) return 10;
+  const m = /(\d+)/.exec(s);
+  return m ? Math.max(1, Math.min(100, Number(m[1]))) : 10;
+}
+
 app.http("products-list", {
-  route: "products-list",
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
+  route: "products-list",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
+    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
     try {
-      // Query params från UI
-      const page = Number(req.query.get("page") || "1");
-      const per_page = Number(req.query.get("per_page") || "100");
-      const orderby = (req.query.get("orderby") || "title") as "title" | "date" | "id" | "price";
-      const order = (req.query.get("order") || "asc") as "asc" | "desc";
-      const status = req.query.get("status") || "";        // "", "publish", "draft", …
-      const search = (req.query.get("search") || "").trim();
-      const category = req.query.get("category") || "";    // id som string
+      const q = req.query.get("q") ?? "";                 // söktext (sku eller namn)
+      const status = req.query.get("status") ?? "";       // 'publish'|'draft'|'' (alla)
+      const category = req.query.get("category") ?? "";   // category id (string)
+      const sortBy = req.query.get("sortBy") ?? "title";  // 'title'|'price'|'date' etc.
+      const sortDir = (req.query.get("sortDir") ?? "asc").toLowerCase(); // 'asc'|'desc'
+      const p = Number(req.query.get("p") ?? "1");        // page
+      const s = req.query.get("s");                       // perPage in UI-format
+      const perPage = parsePerPage(s);
 
-      const qs = new URLSearchParams({
-        page: String(page),
-        per_page: String(Math.min(Math.max(per_page, 1), 100)), // Woo max 100
-        orderby,
-        order,
-        // bättre feltolerans på Woo
-        "hide_empty": "false",
-      });
+      const usp = new URLSearchParams();
+      usp.set("per_page", String(perPage));
+      usp.set("page", String(Math.max(1, p)));
 
-      if (status && status !== "any") qs.set("status", status);
-      if (search) qs.set("search", search);
-      if (category) qs.set("category", category);
+      // Sök: Woo stöder "search"
+      if (q) usp.set("search", q);
 
-      // Hämtning
-      const res = await wcFetch(`/products?${qs.toString()}`);
-      const text = await res.text();
-
-      // Fånga icke‑JSON svar (t.ex. HTML fel från WP)
-      let items: WCProduct[] = [];
-      try {
-        items = JSON.parse(text);
-      } catch {
-        throw new Error(`Woo /products returned non‑JSON (status ${res.status}). Snippet: ${text.slice(0, 200)}`);
+      // Status-filtrering
+      if (status && status !== "Alla" && status !== "all") {
+        // översätt svensk UI till Woo-status
+        const map: Record<string, string> = { "Publicerad": "publish", "Utkast": "draft" };
+        usp.set("status", map[status] ?? status);
       }
 
-      if (!res.ok) {
-        throw new Error(`Woo /products HTTP ${res.status}. Body: ${text.slice(0, 500)}`);
+      // Kategori
+      if (category && category !== "Alla" && !Number.isNaN(Number(category))) {
+        usp.set("category", String(Number(category)));
       }
 
-      // Pagination info från headers
-      const total = Number(res.headers.get("x-wp-total") || items.length || 0);
-      const pages = Number(res.headers.get("x-wp-totalpages") || 1);
+      // Sortering
+      // Woo: orderby = 'date'|'id'|'include'|'title'|'slug'|'price'|'popularity'|'rating'
+      const orderbyMap: Record<string, string> = {
+        title: "title",
+        price: "price",
+        date: "date",
+        id: "id",
+      };
+      usp.set("orderby", orderbyMap[sortBy] ?? "title");
+      usp.set("order", sortDir === "desc" ? "desc" : "asc");
+
+      // Hämta
+      const url = `/wp-json/wc/v3/products?${usp.toString()}`;
+      const res = await wcFetch(url);
+      const items = await readJsonSafe<any[]>(res);
+
+      // Total & pages via headers
+      const total = Number(res.headers.get("x-wp-total") ?? "0");
+      const totalPages = Number(res.headers.get("x-wp-totalpages") ?? "0");
+
+      // Minimera & normalisera för tabellen
+      const rows = (items ?? []).map((p) => ({
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        price: Number(p.price ?? 0),
+        stock_quantity: p.stock_quantity ?? null,
+        stock_status: p.stock_status ?? null,
+        status: p.status,                       // publish/draft/…
+        categories: Array.isArray(p.categories) ? p.categories.map((c: any) => c.name).join(", ") : "",
+        category_ids: Array.isArray(p.categories) ? p.categories.map((c: any) => c.id) : [],
+        image: p.images?.[0]?.src ?? null,
+      }));
 
       return {
         status: 200,
-        jsonBody: { items, total, pages, page },
         headers: CORS,
+        jsonBody: {
+          ok: true,
+          total,
+          pages: totalPages,
+          perPage,
+          page: Math.max(1, p),
+          items: rows,
+        },
       };
     } catch (e: any) {
-      // yta fel till UI så vi slipper “Något gick fel” utan detalj
-      ctx.error("products-list failed", e);
-      return {
-        status: 500,
-        jsonBody: { error: e?.message || String(e) },
-        headers: CORS,
-      };
+      ctx.error("products-list error", e);
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
     }
   },
 });
