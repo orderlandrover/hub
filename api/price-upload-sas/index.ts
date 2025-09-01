@@ -35,7 +35,7 @@ app.http("price-upload-sas", {
 
       // Se till att containern finns
       const cont = blobService.getContainerClient(container);
-      await cont.createIfNotExists({ access: "container" });
+      await cont.createIfNotExists(); // behåll privat container
 
       // Unikt blob-namn (datum + random)
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
