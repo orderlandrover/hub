@@ -16,3 +16,6 @@ import "./import-one";
 import "./import-dry-run";
 import "./import-run";
 import "./price-upload";
+
+import "./price-upload-sas";
+import "./price-upload-from-blob"; // om du använder den efter SAS-steget
