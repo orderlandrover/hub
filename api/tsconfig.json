@@ -13,13 +13,8 @@
     "incremental": true,
     "tsBuildInfoFile": "./.tsbuildinfo",
     "lib": ["ES2020", "DOM"],
-    "types": ["node", "@azure/functions"]
+    "types": ["node"]   // <-- ta bort "@azure/functions"
   },
   "include": ["**/*.ts"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    ".oryx_prod_node_modules",
-    "**/*.spec.ts"
-  ]
+  "exclude": ["node_modules", "dist", ".oryx_prod_node_modules", "**/*.spec.ts"]
 }
