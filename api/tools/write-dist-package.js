@@ -2,18 +2,17 @@
 const fs = require("fs");
 const path = require("path");
 
-const out = {
-  name: "hub-api",
+const out = path.join(__dirname, "..", "dist", "package.json");
+const pkg = {
+  name: "hub-api-dist",
   version: "1.0.0",
   private: true,
-  // SWA/Functions på Linux kör node ~18 i runtime, detta räcker för språkdetektion
-  engines: { node: "~18" },
+  type: "commonjs",
   dependencies: {
     "@azure/functions": "^4.4.0"
   }
 };
 
-const dist = path.join(__dirname, "..", "dist");
-if (!fs.existsSync(dist)) fs.mkdirSync(dist, { recursive: true });
-fs.writeFileSync(path.join(dist, "package.json"), JSON.stringify(out, null, 2));
-console.log("Wrote api/dist/package.json");
+fs.mkdirSync(path.dirname(out), { recursive: true });
+fs.writeFileSync(out, JSON.stringify(pkg, null, 2));
+console.log("Wrote", out);
