@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-    types: [ opened, synchronize, reopened, closed ]
+    types: [opened, synchronize, reopened, closed]
 
 jobs:
   build_and_deploy_job:
@@ -24,15 +24,16 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: upload
 
-          # FRONTEND (Vite bygger till dist/)
-          app_location: /
-          output_location: dist
+          # FRONTEND
+          # Sätt denna till din faktiska frontendmapp.
+          # Om din package.json ligger i repo-roten är "/" ok, annars t.ex. "src".
+          app_location: "/"
+          output_location: "dist"
           app_build_command: npm ci && npm run build --if-present
 
-          # FUNCTIONS – peka på källkod så Oryx bygger API:t
-          api_location: api
-          api_build_command: cd api && npm ci && npm run build
-          
+          # FUNCTIONS
+          api_location: "api"
+          api_build_command: npm ci && npm run build
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -43,6 +44,6 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MANGO_POND_08869CF10 }}
           action: close
-          app_location: /
-          output_location: dist
-          api_location: api
+          app_location: "/"
+          output_location: "dist"
+          api_location: "api"
