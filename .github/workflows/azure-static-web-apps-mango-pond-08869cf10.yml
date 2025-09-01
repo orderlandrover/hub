@@ -46,7 +46,7 @@ jobs:
           # FUNCTIONS (deploya färdigkompilerade JS i api/dist)
           api_location: "api/dist"
           skip_api_build: true           # vi byggde API:t ovan
-          
+         
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
