@@ -48,8 +48,6 @@ function normalizeCategories(raw: any): WCCategory[] {
 /*                         Små hjälpare                                */
 /* ------------------------------------------------------------------ */
 
-
-
 const brand = {
   card: "bg-white rounded-2xl shadow-sm border",
   chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
@@ -642,11 +640,18 @@ function ImportTab(): React.ReactElement {
     if (!sasRes.ok || !sasJson?.ok) {
       throw new Error(sasJson?.error || `SAS-fel: ${sasJson?.raw || ""}`);
     }
-    const { sasUrl, blobUrl } = sasJson as { ok: boolean; sasUrl: string; blobUrl: string };
+    const { sasUrl, container, blobName } = sasJson as { ok: boolean; sasUrl: string; container: string; blobName: string };
     addLogFn("SAS mottagen.");
 
     addLogFn("Laddar upp filen till Blob Storage…");
-    const put = await fetch(sasUrl, { method: "PUT", headers: { "x-ms-blob-type": "BlockBlob" }, body: file });
+    const put = await fetch(sasUrl, {
+      method: "PUT",
+      headers: {
+        "x-ms-blob-type": "BlockBlob",
+        "Content-Type": file.type || "text/csv",
+      },
+      body: file
+    });
     if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 500)}`);
     addLogFn("Uppladdning klar.");
 
@@ -655,7 +660,8 @@ function ImportTab(): React.ReactElement {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        blobUrl,
+        container,
+        blobName,
         fx: Number(opts.fx),
         markupPct: Number(opts.markupPct),
         roundMode: roundModeApi,
@@ -676,7 +682,7 @@ function ImportTab(): React.ReactElement {
     if (out.sample?.errors?.length)  addLogFn(`Exempel fel: ${JSON.stringify(out.sample.errors)}`);
   }
 
-  // ---- Prisfil via Blob/SAS (ersätter tidigare base64-uppladdning)
+  // ---- Prisfil via Blob/SAS
   async function handlePriceUpload(file: File) {
     try {
       setBusy(true);
