@@ -9,7 +9,7 @@
   "main": "dist/index.js",
   "scripts": {
   "clean": "rimraf dist .tsbuildinfo",
-  "build": "tsc -p . && cpy \"**/function.json\" dist --parents && cpy \"host.json\" dist && node tools/write-dist-package.js",
+  "build": "tsc -p . && cpy \"host.json\" dist && node tools/write-dist-package.js",
   "patch:scriptfile": "node tools/patch-scriptfile.js",
   "start": "func start --javascript"
 },
