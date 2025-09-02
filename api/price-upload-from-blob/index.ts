@@ -1,27 +1,22 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { BlobServiceClient, StorageSharedKeyCredential } from "@azure/storage-blob";
+import { BlobServiceClient, StorageSharedKeyCredential, BlobClient } from "@azure/storage-blob";
 import { parse } from "csv-parse/sync";
 import { wcFetch, readJsonSafe } from "../shared/wc";
 import { calcSEK, RoundMode } from "../shared/pricing";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-// --- Helpers (case-insensitive headers, pris/siffror, SKU/GBP/SEK) ---
+// ------- små helpers (samma som tidigare) -------
 function normHdr(s: string) { return s.replace(/\uFEFF/g, "").replace(/\s+/g, " ").trim(); }
 function getCI(obj: Record<string, any>, key: string) {
   const found = Object.keys(obj).find(k => k.toLowerCase() === key.toLowerCase());
   return found ? obj[found] : undefined;
 }
+const SKU_KEYS = ["Part No","PartNo","Part_No","SKU","Code","Part Number","Article","Art Nr","Art.Nr"];
+const PRICE_KEYS_SEK = ["SEK","Price SEK","Pris (SEK)","Pris SEK"];
 function pickNumberLike(v: any) {
   const s = String(v ?? "").replace(/\s/g, "").replace(/,/g, ".").trim();
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : NaN;
 }
-const SKU_KEYS = ["Part No","PartNo","Part_No","SKU","Code","Part Number","Article","Art Nr","Art.Nr"];
 function pickSku(row: Record<string, any>) {
   for (const k of SKU_KEYS) {
     const v = getCI(row, k);
@@ -38,7 +33,11 @@ function pickGbp(row: Record<string, any>) {
       if (Number.isFinite(n)) return n;
     }
   }
-  // fallback: hitta första rimliga talet
+  const priceRaw = getCI(row, "Price");
+  const priceNum = pickNumberLike(priceRaw);
+  const descRaw  = getCI(row, "Description");
+  const descNum  = pickNumberLike(descRaw);
+  if (!Number.isFinite(priceNum) && Number.isFinite(descNum)) return descNum;
   for (const key of Object.keys(row)) {
     const n = pickNumberLike(row[key]);
     if (Number.isFinite(n) && n >= 0.01 && n <= 100000) {
@@ -47,7 +46,6 @@ function pickGbp(row: Record<string, any>) {
   }
   return NaN;
 }
-const PRICE_KEYS_SEK = ["SEK","Price SEK","Pris (SEK)","Pris SEK"];
 function pickSek(row: Record<string, any>) {
   for (const k of PRICE_KEYS_SEK) {
     const raw = getCI(row, k);
@@ -58,23 +56,29 @@ function pickSek(row: Record<string, any>) {
   }
   return NaN;
 }
+// ------------------------------------------------
 
 type Body = {
-  // rekommenderat: skicka container+blobName från klienten
+  // Skicka helst container + blobName (privat container).
   container?: string;
   blobName?: string;
 
-  // fallback om du bara har blobUrl
+  // fallback: blobUrl (kräver SAS med läsrätt — vi använder INTE det i UI:t)
   blobUrl?: string;
 
-  // pris-parametrar
   fx?: number;
   markupPct?: number;
   roundMode?: RoundMode; // "near" | "up" | "down"
   step?: number;
   publish?: boolean;
   dryRun?: boolean;
-  batchSize?: number; // default 5000
+  batchSize?: number;
+};
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
 app.http("price-upload-from-blob", {
@@ -82,43 +86,15 @@ app.http("price-upload-from-blob", {
   methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
+    if (req.method === "OPTIONS") return { status: 200, headers: CORS };
 
     try {
-      const body = (await req.json().catch(() => ({}))) as Body;
+      const body = await req.json() as Body;
 
-      // 1) Hitta container/blobName (helst skickat från klienten)
-      let container = (body.container || "").trim();
-      let blobName  = (body.blobName  || "").trim();
+      // Läs blob-innehåll
+      const text = await downloadBlobText(body);
 
-      if ((!container || !blobName) && body.blobUrl) {
-        const u = new URL(body.blobUrl);
-        const parts = u.pathname.split("/").filter(Boolean); // ["container", "path", "file.csv"]
-        container = container || parts.shift() || "";
-        blobName  = blobName  || parts.join("/");
-      }
-
-      if (!container || !blobName) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "Missing container/blobName (or valid blobUrl)" } };
-      }
-
-      // 2) Koppla till Storage med kontonyckel (privat läsning – inget SAS behövs här)
-      const accountName = process.env.STORAGE_ACCOUNT_NAME!;
-      const accountKey  = process.env.STORAGE_ACCOUNT_KEY!;
-      if (!accountName || !accountKey) {
-        return { status: 500, headers: CORS, jsonBody: { ok: false, error: "Missing STORAGE_ACCOUNT_NAME/KEY" } };
-      }
-
-      const cred = new StorageSharedKeyCredential(accountName, accountKey);
-      const svc  = new BlobServiceClient(`https://${accountName}.blob.core.windows.net`, cred);
-
-      const cont = svc.getContainerClient(container);
-      const blob = cont.getBlockBlobClient(blobName);
-
-      // 3) Läs CSV-innehållet
-      const dl = await blob.download();
-      const text = await streamToString(dl.readableStreamBody);
-
+      // CSV -> rows
       const rows = parse(text, {
         columns: (h: string[]) => h.map(normHdr),
         delimiter: ",",
@@ -129,21 +105,19 @@ app.http("price-upload-from-blob", {
         trim: true,
       }) as Record<string, any>[];
 
-      const total = rows.length;
-
-      // 4) Parametrar för pris
-      const fx        = Number(body.fx ?? 13.0);
+      const fx = Number(body.fx ?? 13.0);
       const markupPct = Number(body.markupPct ?? 0);
-      const step      = Number(body.step ?? 1);
+      const step = Number(body.step ?? 1);
       const roundMode = (body.roundMode ?? "near") as RoundMode;
-      const publish   = !!body.publish;
-      const dryRun    = !!body.dryRun;
+      const publish = !!body.publish;
+      const dryRun = !!body.dryRun;
       const batchSize = Math.max(1000, Math.min(20000, Number(body.batchSize ?? 5000)));
 
+      const total = rows.length;
       let updated = 0, skipped = 0, notFound = 0, badRows = 0, processed = 0;
       const sample = { updates: [] as any[], errors: [] as any[], skipped: [] as any[], detect: { headers: Object.keys(rows[0] || {}) } };
 
-      // 5) Loop i batchar
+      // Bearbeta i batchar
       for (let off = 0; off < total; off += batchSize) {
         const slice = rows.slice(off, Math.min(off + batchSize, total));
 
@@ -165,7 +139,6 @@ app.http("price-upload-from-blob", {
 
             if (!sku) { skipped++; if (sample.skipped.length < 5) sample.skipped.push({ reason: "missing sku", raw }); continue; }
 
-            // Hitta produkt i Woo på SKU
             const find = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
             const { json: list, text: tFind } = await readJsonSafe(find);
             if (!find.ok || !Array.isArray(list)) throw new Error(`Woo /products?sku ${find.status}: ${tFind.slice(0,180)}`);
@@ -176,7 +149,6 @@ app.http("price-upload-from-blob", {
               updated++; if (sample.updates.length < 5) sample.updates.push({ id, sku, from: regular_price, to: targetSEK, dryRun: true }); continue;
             }
 
-            // Uppdatera pris (och ev. publicera)
             const payload: any = { regular_price: targetSEK };
             if (publish) payload.status = "publish";
 
@@ -201,20 +173,45 @@ app.http("price-upload-from-blob", {
         headers: CORS,
         jsonBody: {
           ok: true,
-          source: "blob",
-          container, blobName,
-          total, processed,
-          updated, skipped, notFound, badRows,
-          sample,
-          dryRun, publish, fx, markupPct, step, roundMode,
+          total, processed, updated, skipped, notFound, badRows,
+          sample, dryRun, publish, fx, markupPct, step, roundMode,
         },
       };
     } catch (e: any) {
-      ctx.error?.("price-upload-from-blob error", e);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, error: e?.message || "price-upload-from-blob failed" } };
+      return {
+        status: 500,
+        headers: CORS,
+        jsonBody: { ok: false, error: e?.message || "price-upload-from-blob failed" },
+      };
     }
   },
 });
+
+// ---- helpers ----
+async function downloadBlobText(body: Body): Promise<string> {
+  // 1) Föredras: container + blobName (privat container, läs med konto-nyckel)
+  if (body.container && body.blobName) {
+    const accountName = process.env.STORAGE_ACCOUNT_NAME!;
+    const accountKey  = process.env.STORAGE_ACCOUNT_KEY!;
+    if (!accountName || !accountKey) throw new Error("Missing STORAGE_ACCOUNT_NAME/KEY");
+
+    const cred = new StorageSharedKeyCredential(accountName, accountKey);
+    const svc  = new BlobServiceClient(`https://${accountName}.blob.core.windows.net`, cred);
+    const blob = svc.getContainerClient(body.container).getBlobClient(body.blobName);
+
+    const dl = await blob.download();
+    return await streamToString(dl.readableStreamBody);
+  }
+
+  // 2) Fallback: blobUrl (kräver SAS med läsrätt)
+  if (body.blobUrl) {
+    const blob = new BlobClient(body.blobUrl);
+    const dl = await blob.download();
+    return await streamToString(dl.readableStreamBody);
+  }
+
+  throw new Error("blob reference missing (container+blobName eller blobUrl krävs)");
+}
 
 async function streamToString(
   body: NodeJS.ReadableStream | ReadableStream<Uint8Array> | null | undefined
