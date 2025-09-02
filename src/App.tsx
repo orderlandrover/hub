@@ -672,7 +672,7 @@ function ImportTab(): React.ReactElement {
       step: stepApi,
       publish: !!opts.publish,
       dryRun: !!opts.dryRun,
-      batchSize: 5000,
+      batchSize: 30000,
     }),
   });
   const out = await robust(procRes);
