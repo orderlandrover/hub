@@ -957,13 +957,3 @@ function ImportTab(): React.ReactElement {
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*                     Robust JSON-parse helper                        */
-/* ------------------------------------------------------------------ */
-
-async function parseJsonRobust(res: Response): Promise<any> {
-  const text = await res.text();
-  try { return JSON.parse(text); }
-  catch { return { ok: false, error: `Failed to parse JSON (${res.status})`, raw: text }; }
-}
