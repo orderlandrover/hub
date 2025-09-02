@@ -1,3 +1,4 @@
+// api/price-upload-from-blob/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import {
   BlobServiceClient,
@@ -5,7 +6,7 @@ import {
   BlobClient,
   RestError,
 } from "@azure/storage-blob";
-import { parse } from "csv-parse/sync";
+// OBS: vi importerar INTE parse statiskt — vi gör en dynamisk import inne i handlern
 import { wcFetch, readJsonSafe } from "../shared/wc";
 import { calcSEK, RoundMode } from "../shared/pricing";
 
@@ -18,8 +19,8 @@ const CORS = {
 type Body = {
   container?: string;
   blobName?: string;
-  blobUrl?: string;    // kan vara med SAS
-  sasUrl?: string;     // alternativt explicit SAS-URL
+  blobUrl?: string;   // kan vara full URL (med eller utan SAS)
+  sasUrl?: string;    // alternativt explicit SAS-URL
   fx?: number;
   markupPct?: number;
   roundMode?: RoundMode; // "near" | "up" | "down"
@@ -30,7 +31,7 @@ type Body = {
 };
 
 // ---------------- CSV helpers ----------------
-function normHdr(s: string) { return s.replace(/\uFEFF/g,"").replace(/\s+/g," ").trim(); }
+function normHdr(s: string) { return s.replace(/\uFEFF/g, "").replace(/\s+/g, " ").trim(); }
 function getCI(obj: Record<string, any>, key: string) {
   const found = Object.keys(obj).find(k => k.toLowerCase() === key.toLowerCase());
   return found ? obj[found] : undefined;
@@ -98,7 +99,8 @@ app.http("price-upload-from-blob", {
       // ---- 1) Läs CSV-innehåll från blob (konto-nyckel ELLER SAS) ----
       const csvText = await downloadBlobText(body, ctx);
 
-      // ---- 2) Parse CSV ----
+      // ---- 2) Parse CSV (dynamisk import så vi fångar modul-fel i vår try/catch) ----
+      const { parse } = await import("csv-parse/sync");
       const rows = parse(csvText, {
         columns: (h: string[]) => h.map(normHdr),
         delimiter: ",",
@@ -106,7 +108,7 @@ app.http("price-upload-from-blob", {
         skip_empty_lines: true,
         relax_quotes: true,
         relax_column_count: true,
-        trim: true
+        trim: true,
       }) as Record<string, any>[];
 
       // ---- 3) Parametrar ----
@@ -141,20 +143,31 @@ app.http("price-upload-from-blob", {
 
             if (!sku) { skipped++; if (sample.skipped.length < 5) sample.skipped.push({ reason: "missing sku", raw }); continue; }
 
-            const find = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
-            const { json: list, text: tFind } = await readJsonSafe(find);
-            if (!find.ok || !Array.isArray(list)) throw new Error(`Woo /products?sku ${find.status}: ${tFind.slice(0,180)}`);
+            const findRes = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
+            const list = await readJsonSafe<any[]>(findRes);
+            if (!findRes.ok || !Array.isArray(list)) {
+              const tFind = await findRes.text();
+              throw new Error(`Woo /products?sku ${findRes.status}: ${tFind.slice(0, 180)}`);
+            }
             if (list.length === 0) { notFound++; if (sample.errors.length < 5) sample.errors.push({ sku, reason: "not found" }); continue; }
 
-            const { id, regular_price } = list[0] || {};
-            if (dryRun) { updated++; if (sample.updates.length < 5) sample.updates.push({ id, sku, from: regular_price, to: targetSEK, dryRun: true }); continue; }
+            const { id, regular_price } = (list[0] || {}) as { id: number; regular_price?: string };
+
+            if (dryRun) {
+              updated++; if (sample.updates.length < 5) sample.updates.push({ id, sku, from: regular_price, to: targetSEK, dryRun: true });
+              continue;
+            }
 
             const payload: any = { regular_price: targetSEK };
             if (publish) payload.status = "publish";
-            const upd = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
 
-            if (upd.ok) { updated++; if (sample.updates.length < 5) sample.updates.push({ id, sku, from: regular_price, to: targetSEK }); }
-            else { const msg = await upd.text(); badRows++; if (sample.errors.length < 5) sample.errors.push({ sku, error: msg || "update failed" }); }
+            const updRes = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+            if (updRes.ok) {
+              updated++; if (sample.updates.length < 5) sample.updates.push({ id, sku, from: regular_price, to: targetSEK });
+            } else {
+              const msg = await updRes.text();
+              badRows++; if (sample.errors.length < 5) sample.errors.push({ sku, error: msg || "update failed" });
+            }
           } catch (e: any) {
             badRows++; if (sample.errors.length < 5) sample.errors.push({ error: e?.message || String(e) });
           }
@@ -163,7 +176,11 @@ app.http("price-upload-from-blob", {
         ctx.log?.(`[PRICE-BLOB] progress ${processed}/${total} updated=${updated} skipped=${skipped} notFound=${notFound} bad=${badRows}`);
       }
 
-      return { status: 200, headers: CORS, jsonBody: { ok: true, total, processed, updated, skipped, notFound, badRows, sample, dryRun, publish, fx, markupPct, step, roundMode } };
+      return {
+        status: 200,
+        headers: CORS,
+        jsonBody: { ok: true, total, processed, updated, skipped, notFound, badRows, sample, dryRun, publish, fx, markupPct, step, roundMode },
+      };
     } catch (e: any) {
       const rest = e as RestError;
       ctx.error?.("price-upload-from-blob FAILED", e);
@@ -173,8 +190,8 @@ app.http("price-upload-from-blob", {
         jsonBody: {
           ok: false,
           error: e?.message || "price-upload-from-blob failed",
-          details: { statusCode: (rest as any)?.statusCode, code: (rest as any)?.code, name: e?.name }
-        }
+          details: { statusCode: (rest as any)?.statusCode, code: (rest as any)?.code, name: e?.name },
+        },
       };
     }
   },
@@ -187,11 +204,14 @@ async function downloadBlobText(body: Body, ctx: InvocationContext): Promise<str
     const accountName = process.env.STORAGE_ACCOUNT_NAME!;
     const accountKey  = process.env.STORAGE_ACCOUNT_KEY!;
     if (!accountName || !accountKey) throw new Error("Missing STORAGE_ACCOUNT_NAME/KEY");
+
     const cred = new StorageSharedKeyCredential(accountName, accountKey);
     const svc  = new BlobServiceClient(`https://${accountName}.blob.core.windows.net`, cred);
     const blob = svc.getContainerClient(body.container).getBlobClient(body.blobName);
+
     const exists = await blob.exists();
     if (!exists) throw new Error(`Blob not found: ${body.container}/${body.blobName}`);
+
     const dl = await blob.download();
     return await streamToString(dl.readableStreamBody);
   }
@@ -210,6 +230,7 @@ async function streamToString(
   body: NodeJS.ReadableStream | ReadableStream<Uint8Array> | null | undefined
 ): Promise<string> {
   if (!body) return "";
+  // Web ReadableStream
   if (typeof (body as any).getReader === "function") {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     const chunks: Uint8Array[] = [];
@@ -220,6 +241,7 @@ async function streamToString(
     }
     return Buffer.concat(chunks).toString("utf8");
   }
+  // Node stream
   const chunks: Uint8Array[] = [];
   for await (const chunk of body as any) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
