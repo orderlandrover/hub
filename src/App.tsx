@@ -618,48 +618,54 @@ function ImportTab(): React.ReactElement {
 
   /** Kör hela Blob-flödet: SAS -> PUT -> server-bearbetning */
   async function runBlobPriceImport(
-    file: File,
-    opts: {
-      fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
-      publish: boolean; dryRun: boolean;
-    },
-    addLogFn: (s: string) => void
-  ) {
-    
-    const roundModeApi =
-      opts.roundModeUI === "nearest" ? "near" :
-      opts.roundModeUI === "up"      ? "up"   :
-      opts.roundModeUI === "down"    ? "down" : "near";
-    const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
+  file: File,
+  opts: {
+    fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
+    publish: boolean; dryRun: boolean;
+  },
+  addLogFn: (s: string) => void
+): Promise<void> {
+  const roundModeApi =
+    opts.roundModeUI === "nearest" ? "near" :
+    opts.roundModeUI === "up"      ? "up"   :
+    opts.roundModeUI === "down"    ? "down" : "near";
+  const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
 
-    // 1) SAS
-    addLogFn("Begär SAS-URL…");
-    const sasRes = await fetch("/api/price-upload-sas", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name }),
-    });
-    const sasJson = await parseJsonRobust(sasRes);
-    if (!sasRes.ok || !sasJson?.ok || !sasJson?.sasUrl) {
-      const msg = sasJson?.error || `SAS-fel (${sasRes.status})`;
-      throw new Error(`${msg}${sasJson?.raw ? ` – ${String(sasJson.raw).slice(0, 200)}` : ""}`);
-    }
-    const { sasUrl, blobUrl, container, blobName } = sasJson as {
-      sasUrl: string; blobUrl?: string; container?: string; blobName?: string;
-    };
-    addLogFn("SAS mottagen.");
+  const robust = async (res: Response) => {
+    const t = await res.text();
+    try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
+  };
 
-    // 2) PUT till Blob
-    addLogFn("Laddar upp filen till Blob Storage…");
-    const putHeaders: Record<string,string> = { "x-ms-blob-type": "BlockBlob" };
-    putHeaders["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
-    const put = await fetch(sasUrl, { method: "PUT", headers: putHeaders, body: file });
-    if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 300)}`);
-    addLogFn("Uppladdning klar.");
+  // 1) Hämta SAS
+  addLogFn("Begär SAS-URL…");
+  const sasRes  = await fetch("/api/price-upload-sas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name }),
+  });
+  const sasJson = await robust(sasRes);
+  if (!sasRes.ok || !sasJson?.ok) {
+    throw new Error(`SAS-fel (${sasRes.status}): ${sasJson?.error || sasJson?.raw || "unknown"}`);
+  }
+  const { sasUrl, container, blobName } = sasJson as { sasUrl: string; container: string; blobName: string };
+  addLogFn("SAS mottagen.");
 
-    // 3) Server-bearbetning
-    addLogFn("Startar server-bearbetning…");
-    const payload: any = {
+  // 2) PUT -> Blob
+  addLogFn("Laddar upp filen till Blob Storage…");
+  const headers: Record<string,string> = { "x-ms-blob-type": "BlockBlob" };
+  headers["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
+  const put = await fetch(sasUrl, { method: "PUT", headers, body: file });
+  if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0,300)}`);
+  addLogFn("Uppladdning klar.");
+
+  // 3) Server-bearbetning
+  addLogFn("Startar server-bearbetning…");
+  const procRes = await fetch("/api/price-upload-from-blob", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      container, blobName,                    // läs via konto-nyckel
+      sasUrl,                                 // …eller fall back via SAS om nödvändigt
       fx: Number(opts.fx),
       markupPct: Number(opts.markupPct),
       roundMode: roundModeApi,
@@ -667,31 +673,20 @@ function ImportTab(): React.ReactElement {
       publish: !!opts.publish,
       dryRun: !!opts.dryRun,
       batchSize: 5000,
-    };
-    if (container && blobName) {
-      payload.container = container;
-      payload.blobName = blobName;
-    } else if (blobUrl) {
-      payload.blobUrl = blobUrl;
-    }
-
-    const procRes = await fetch("/api/price-upload-from-blob", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const out = await parseJsonRobust(procRes);
-    if (!procRes.ok || !out?.ok) {
-      const details = out?.details ? ` ${JSON.stringify(out.details)}` : "";
-      const raw = out?.raw ? ` – ${String(out.raw).slice(0, 200)}` : "";
-      throw new Error((out?.error || `Bearbetning misslyckades (${procRes.status})`) + details + raw);
-    }
-
-    addLogFn(`KLART: total=${out.total}, updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`);
-    if (out.sample?.updates?.length) addLogFn(`Exempel uppdateringar: ${JSON.stringify(out.sample.updates.slice(0,5))}`);
-    if (out.sample?.skipped?.length) addLogFn(`Exempel skippade: ${JSON.stringify(out.sample.skipped.slice(0,5))}`);
-    if (out.sample?.errors?.length)  addLogFn(`Exempel fel: ${JSON.stringify(out.sample.errors.slice(0,5))}`);
+    }),
+  });
+  const out = await robust(procRes);
+  if (!procRes.ok || !out?.ok) {
+    throw new Error((out?.error || `Bearbetning misslyckades (${procRes.status})`) +
+                    (out?.details ? ` ${JSON.stringify(out.details)}` : "") +
+                    (out?.raw ? ` – ${String(out.raw).slice(0,200)}` : ""));
   }
+
+  addLogFn(`KLART: total=${out.total}, updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`);
+  if (Array.isArray(out.sample?.updates) && out.sample.updates.length) addLogFn(`Exempel uppdateringar: ${JSON.stringify(out.sample.updates.slice(0,5))}`);
+  if (Array.isArray(out.sample?.skipped) && out.sample.skipped.length) addLogFn(`Exempel skippade: ${JSON.stringify(out.sample.skipped.slice(0,5))}`);
+  if (Array.isArray(out.sample?.errors)  && out.sample.errors.length)  addLogFn(`Exempel fel: ${JSON.stringify(out.sample.errors.slice(0,5))}`);
+}
 
   // ---- Prisfil via Blob/SAS
   async function handlePriceUpload(file: File) {
