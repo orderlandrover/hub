@@ -73,7 +73,6 @@ function pickGbp(row: Record<string, any>, preferKey?: string) {
       if (Number.isFinite(n)) return n;
     }
   }
-  // fallback: första “rimliga” talet (undvik UOI=1)
   for (const key of Object.keys(row)) {
     const n = pickNumberLike(row[key]);
     if (Number.isFinite(n) && n >= 0.01 && n <= 100000) {
@@ -127,6 +126,25 @@ app.http("price-upload-from-blob", {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
+    // --- snabba diag-lägen för att undvika “Backend call failure”-mystik ---
+    const url = new URL(req.url);
+    const diag = url.searchParams.get("diag");
+    if (diag === "ping") {
+      return { status: 200, headers: CORS, jsonBody: { ok: true, ts: Date.now() } };
+    }
+    if (diag === "deps") {
+      try {
+        // dynamiskt import för att verifiera att csv-parse finns i miljön
+        // (top-level import kan krascha före try/catch om modulen saknas)
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        await import("csv-parse/sync");
+        return { status: 200, headers: CORS, jsonBody: { ok: true, csvParse: "available" } };
+      } catch (e: any) {
+        return { status: 500, headers: CORS, jsonBody: { ok: false, csvParse: "MISSING", error: e?.message || String(e) } };
+      }
+    }
+
     try {
       const body = (await req.json().catch(() => ({}))) as Body;
 
@@ -157,7 +175,6 @@ app.http("price-upload-from-blob", {
       const publish    = !!body.publish;
       const dryRun     = !!body.dryRun;
 
-      // upp till 30k rader per serverbatch
       const MAX_BATCH = 30000;
       const DEFAULT_BATCH = 10000;
       const batchSize  = Math.max(1000, Math.min(MAX_BATCH, Number(body.batchSize ?? DEFAULT_BATCH)));
@@ -168,7 +185,6 @@ app.http("price-upload-from-blob", {
       const priceKey = body.priceKey || "Price";
       const nameKey  = body.nameKey  || "Description";
 
-      // 4) Loop med begränsad parallellism per batch
       const total = rows.length;
       let updated = 0, skipped = 0, notFound = 0, badRows = 0, processed = 0;
       const sample = {
@@ -178,10 +194,7 @@ app.http("price-upload-from-blob", {
         detect:  { headers: Object.keys(rows[0] || {}), delimiter },
       };
 
-      // undvik att slå Woo flera gånger för samma SKU inom samma körning
       const seen = new Set<string>();
-
-      // hur många samtidiga WC-anrop?
       const CONC = Number(process.env.WC_CONCURRENCY || 6);
 
       for (let off = 0; off < total; off += batchSize) {
@@ -197,7 +210,6 @@ app.http("price-upload-from-blob", {
             if (seen.has(sku)) { skipped++; return; }
             seen.add(sku);
 
-            // GBP -> SEK (eller SEK direkt om finns)
             const gbp = pickGbp(raw, priceKey);
             let targetSEK: string;
             if (Number.isFinite(gbp)) {
@@ -211,7 +223,6 @@ app.http("price-upload-from-blob", {
               targetSEK = Number(sek).toFixed(2);
             }
 
-            // uppslag i Woo på SKU
             const find = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
             const { json: list, text: tFind } = await readJsonSafe(find);
             if (!find.ok || !Array.isArray(list)) {
@@ -226,8 +237,7 @@ app.http("price-upload-from-blob", {
             const id: number = prod.id;
             const fromPrice: string | undefined = prod.regular_price;
 
-            // ev. sätt namn från Description om det bara är SKU idag
-            let payload: any = { regular_price: targetSEK };
+            const payload: any = { regular_price: targetSEK };
             if (publish) payload.status = "publish";
             if (updateName) {
               const currentName = String(prod.name || "");

@@ -2,17 +2,20 @@
 const fs = require("fs");
 const path = require("path");
 
-const out = path.join(__dirname, "..", "dist", "package.json");
-const pkg = {
-  name: "hub-api-dist",
-  version: "1.0.0",
+const apiPkg = require(path.join(__dirname, "..", "package.json"));
+
+const out = {
+  name: (apiPkg.name || "hub-api") + "-dist",
+  version: apiPkg.version || "1.0.0",
   private: true,
   type: "commonjs",
-  dependencies: {
-    "@azure/functions": "^4.4.0"
-  }
+  main: "index.js",
+  engines: apiPkg.engines || { node: ">=20.19.0" },
+  // TA MED ALLA RUNTIME-DEPS (csv-parse inkluderat)
+  dependencies: { ...(apiPkg.dependencies || {}) }
 };
 
-fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, JSON.stringify(pkg, null, 2));
-console.log("Wrote", out);
+const dst = path.join(__dirname, "..", "dist", "package.json");
+fs.mkdirSync(path.dirname(dst), { recursive: true });
+fs.writeFileSync(dst, JSON.stringify(out, null, 2));
+console.log("[write-dist-package] wrote", dst);
