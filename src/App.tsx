@@ -463,7 +463,7 @@ function ProductsTab(): React.ReactElement {
               <th>ID</th>
             </tr>
           </thead>
-        <tbody>
+          <tbody>
             {loading && (
               <tr>
                 <td colSpan={8} className="p-6 text-center">
@@ -571,6 +571,10 @@ function ImportTab(): React.ReactElement {
   const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
   const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
+  // Chunk & batch
+  const CHUNK_LIMIT = 2500;   // rader per serverkörning
+  const INNER_BATCH = 1000;   // rader per intern batch på servern
+
   useEffect(() => {
     (async () => {
       try {
@@ -599,101 +603,110 @@ function ImportTab(): React.ReactElement {
     setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 500));
   }
 
-  async function postJson<T>(url: string, body: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    let json: any = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      /* ignore */
-    }
-    if (!res.ok) throw new Error(json?.error || text || `HTTP ${res.status}`);
-    return json as T;
-  }
-
-  /** Kör hela Blob-flödet: SAS -> PUT -> server-bearbetning */
-  async function runBlobPriceImport(
-  file: File,
-  opts: {
-    fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
-    publish: boolean; dryRun: boolean;
-  },
-  addLogFn: (s: string) => void
-): Promise<void> {
-  const roundModeApi =
-    opts.roundModeUI === "nearest" ? "near" :
-    opts.roundModeUI === "up"      ? "up"   :
-    opts.roundModeUI === "down"    ? "down" : "near";
-  const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
-
-  const robust = async (res: Response) => {
+  async function safeJson(res: Response): Promise<any> {
     const t = await res.text();
     try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
-  };
-
-  // 1) Hämta SAS
-  addLogFn("Begär SAS-URL…");
-  const sasRes  = await fetch("/api/price-upload-sas", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename: file.name }),
-  });
-  const sasJson = await robust(sasRes);
-  if (!sasRes.ok || !sasJson?.ok) {
-    throw new Error(`SAS-fel (${sasRes.status}): ${sasJson?.error || sasJson?.raw || "unknown"}`);
-  }
-  const { sasUrl, container, blobName } = sasJson as { sasUrl: string; container: string; blobName: string };
-  addLogFn("SAS mottagen.");
-
-  // 2) PUT -> Blob
-  addLogFn("Laddar upp filen till Blob Storage…");
-  const headers: Record<string,string> = { "x-ms-blob-type": "BlockBlob" };
-  headers["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
-  const put = await fetch(sasUrl, { method: "PUT", headers, body: file });
-  if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0,300)}`);
-  addLogFn("Uppladdning klar.");
-
-  // 3) Server-bearbetning
-  addLogFn("Startar server-bearbetning…");
-  const procRes = await fetch("/api/price-upload-from-blob", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      container, blobName,                    // läs via konto-nyckel
-      sasUrl,                                 // …eller fall back via SAS om nödvändigt
-      fx: Number(opts.fx),
-      markupPct: Number(opts.markupPct),
-      roundMode: roundModeApi,
-      step: stepApi,
-      publish: !!opts.publish,
-      dryRun: !!opts.dryRun,
-      batchSize: 30000,
-    }),
-  });
-  const out = await robust(procRes);
-  if (!procRes.ok || !out?.ok) {
-    throw new Error((out?.error || `Bearbetning misslyckades (${procRes.status})`) +
-                    (out?.details ? ` ${JSON.stringify(out.details)}` : "") +
-                    (out?.raw ? ` – ${String(out.raw).slice(0,200)}` : ""));
   }
 
-  addLogFn(`KLART: total=${out.total}, updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`);
-  if (Array.isArray(out.sample?.updates) && out.sample.updates.length) addLogFn(`Exempel uppdateringar: ${JSON.stringify(out.sample.updates.slice(0,5))}`);
-  if (Array.isArray(out.sample?.skipped) && out.sample.skipped.length) addLogFn(`Exempel skippade: ${JSON.stringify(out.sample.skipped.slice(0,5))}`);
-  if (Array.isArray(out.sample?.errors)  && out.sample.errors.length)  addLogFn(`Exempel fel: ${JSON.stringify(out.sample.errors.slice(0,5))}`);
-}
+  /** Prisfil: SAS -> PUT -> kör servern i chunkar om 2 500 rader tills klart */
+  async function runChunkedPriceImport(
+    file: File,
+    opts: {
+      fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
+      publish: boolean; dryRun: boolean;
+    },
+    addLogFn: (s: string) => void
+  ): Promise<void> {
+    const roundModeApi =
+      opts.roundModeUI === "nearest" ? "near" :
+      opts.roundModeUI === "up"      ? "up"   :
+      opts.roundModeUI === "down"    ? "down" : "near";
+    const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
+
+    // 1) Hämta SAS
+    addLogFn("Begär SAS-URL…");
+    const sasRes = await fetch("/api/price-upload-sas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name }),
+    });
+    const sasJson = await safeJson(sasRes);
+    if (!sasRes.ok || !sasJson?.ok) {
+      throw new Error(`SAS-fel (${sasRes.status}): ${sasJson?.error || sasJson?.raw || "unknown"}`);
+    }
+    const { sasUrl, container, blobName } = sasJson as { sasUrl: string; container: string; blobName: string };
+    addLogFn("SAS mottagen.");
+
+    // 2) PUT -> Blob
+    addLogFn("Laddar upp filen till Blob Storage…");
+    const headers: Record<string, string> = { "x-ms-blob-type": "BlockBlob" };
+    headers["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
+    const put = await fetch(sasUrl, { method: "PUT", headers, body: file });
+    if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 300)}`);
+    addLogFn("Uppladdning klar.");
+
+    // 3) Kör servern i delkörningar
+    let offset = 0;
+    let part = 1;
+    let grand = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
+
+    while (true) {
+      addLogFn(`Startar server-bearbetning (del ${part})… offset=${offset}, limit=${CHUNK_LIMIT}`);
+      const body = {
+        container,
+        blobName,
+        fx: Number(opts.fx),
+        markupPct: Number(opts.markupPct),
+        roundMode: roundModeApi,
+        step: stepApi,
+        publish: !!opts.publish,
+        dryRun: !!opts.dryRun,
+        batchSize: INNER_BATCH,
+        offset,
+        limitRows: CHUNK_LIMIT,
+      };
+
+      const procRes = await fetch("/api/price-upload-from-blob", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await safeJson(procRes);
+      if (!procRes.ok || !out?.ok) {
+        throw new Error((out?.error || `Bearbetning misslyckades (${procRes.status})`) +
+          (out?.details ? ` ${JSON.stringify(out.details)}` : "") +
+          (out?.raw ? ` – ${String(out.raw).slice(0, 200)}` : ""));
+      }
+
+      grand.updated  += Number(out.updated || 0);
+      grand.skipped  += Number(out.skipped || 0);
+      grand.notFound += Number(out.notFound || 0);
+      grand.badRows  += Number(out.badRows || 0);
+      grand.total     = Number(out.total || grand.total);
+
+      addLogFn(
+        `Del ${part} klar: rader ${out.range?.offset}–${out.range?.end - 1}, ` +
+        `updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`
+      );
+
+      const next = out.nextOffset as number | null;
+      if (!next || next >= out.total) break;
+      offset = next;
+      part++;
+    }
+
+    addLogFn(
+      `KLART: total=${grand.total}, updated=${grand.updated}, skipped=${grand.skipped}, ` +
+      `notFound=${grand.notFound}, bad=${grand.badRows}`
+    );
+  }
 
   // ---- Prisfil via Blob/SAS
   async function handlePriceUpload(file: File) {
     try {
       setBusy(true);
       addLog(`Vald fil: ${file.name}`);
-      await runBlobPriceImport(
+      await runChunkedPriceImport(
         file,
         {
           fx,
@@ -717,6 +730,19 @@ function ImportTab(): React.ReactElement {
     const ids = selectedSubs.map((n) => Number(n)).filter(Number.isFinite);
     if (!ids.length) addLog("Välj minst en underkategori.");
     return ids;
+  }
+
+  async function postJson<T>(url: string, body: unknown): Promise<T> {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json: any = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+    if (!res.ok) throw new Error(json?.error || text || `HTTP ${res.status}`);
+    return json as T;
   }
 
   async function handleDryRun() {
@@ -879,6 +905,7 @@ function ImportTab(): React.ReactElement {
             <input type="checkbox" className="accent-amber-600" checked={dry} onChange={() => setDry(!dry)} />
             Dry-run (visa bara vad som skulle ändras)
           </label>
+          <span className="ml-auto text-xs opacity-60">Kör automatiskt {CHUNK_LIMIT} rader/körning</span>
         </div>
       </section>
 
