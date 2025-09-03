@@ -571,9 +571,10 @@ function ImportTab(): React.ReactElement {
   const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
   const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
-  // Chunk & batch
-  const CHUNK_LIMIT = 2500;   // rader per serverkörning
-  const INNER_BATCH = 1000;   // rader per intern batch på servern
+  // Chunk & batch (frontend-styrning)
+  const CHUNK_ROWS = 500;   // rader per serverkörning
+  const BATCH_SIZE = 250;   // rader per intern batch på servern
+  const SLEEP_MS   = 300;   // liten paus mellan delarna
 
   useEffect(() => {
     (async () => {
@@ -608,8 +609,10 @@ function ImportTab(): React.ReactElement {
     try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
   }
 
-  /** Prisfil: SAS -> PUT -> kör servern i chunkar om 2 500 rader tills klart */
-  async function runChunkedPriceImport(
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  /** Prisfil: SAS -> PUT -> kör servern i chunkar om 500 rader tills klart */
+  async function runBlobPriceImport(
     file: File,
     opts: {
       fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
@@ -648,10 +651,11 @@ function ImportTab(): React.ReactElement {
     // 3) Kör servern i delkörningar
     let offset = 0;
     let part = 1;
-    let grand = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
+    let totals = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
 
     while (true) {
-      addLogFn(`Startar server-bearbetning (del ${part})… offset=${offset}, limit=${CHUNK_LIMIT}`);
+      addLogFn(`Startar server-bearbetning (del ${part})… offset=${offset}, limit=${CHUNK_ROWS}`);
+
       const body = {
         container,
         blobName,
@@ -661,9 +665,11 @@ function ImportTab(): React.ReactElement {
         step: stepApi,
         publish: !!opts.publish,
         dryRun: !!opts.dryRun,
-        batchSize: INNER_BATCH,
+        batchSize: BATCH_SIZE,
         offset,
-        limitRows: CHUNK_LIMIT,
+        limitRows: CHUNK_ROWS,
+        // sasUrl skickas med som fallback om kontonyckel saknas i Functions
+        sasUrl,
       };
 
       const procRes = await fetch("/api/price-upload-from-blob", {
@@ -671,33 +677,43 @@ function ImportTab(): React.ReactElement {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+
       const out = await safeJson(procRes);
       if (!procRes.ok || !out?.ok) {
-        throw new Error((out?.error || `Bearbetning misslyckades (${procRes.status})`) +
+        throw new Error(
+          (out?.error || `Bearbetning misslyckades (${procRes.status})`) +
           (out?.details ? ` ${JSON.stringify(out.details)}` : "") +
-          (out?.raw ? ` – ${String(out.raw).slice(0, 200)}` : ""));
+          (out?.raw ? ` – ${String(out.raw).slice(0, 200)}` : "")
+        );
       }
 
-      grand.updated  += Number(out.updated || 0);
-      grand.skipped  += Number(out.skipped || 0);
-      grand.notFound += Number(out.notFound || 0);
-      grand.badRows  += Number(out.badRows || 0);
-      grand.total     = Number(out.total || grand.total);
+      totals.updated  += Number(out.updated || 0);
+      totals.skipped  += Number(out.skipped || 0);
+      totals.notFound += Number(out.notFound || 0);
+      totals.badRows  += Number(out.badRows || 0);
+      totals.total     = Number(out.total || totals.total);
 
+      const r0 = out.range?.offset ?? offset;
+      const r1 = (out.range?.end ?? offset) - 1;
       addLogFn(
-        `Del ${part} klar: rader ${out.range?.offset}–${out.range?.end - 1}, ` +
+        `Del ${part} klar: rader ${r0}–${r1}, ` +
         `updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`
       );
 
-      const next = out.nextOffset as number | null;
-      if (!next || next >= out.total) break;
-      offset = next;
+      const next = out.nextOffset as number | null | undefined;
+      if (next === null || next === undefined || !Number.isFinite(Number(next))) break;
+      if (Number(next) <= offset) break; // skydd mot loop
+
+      offset = Number(next);
       part++;
+
+      // liten paus mellan delarna så Woo/Functions får andrum
+      await sleep(SLEEP_MS);
     }
 
     addLogFn(
-      `KLART: total=${grand.total}, updated=${grand.updated}, skipped=${grand.skipped}, ` +
-      `notFound=${grand.notFound}, bad=${grand.badRows}`
+      `KLART: total=${totals.total}, updated=${totals.updated}, skipped=${totals.skipped}, ` +
+      `notFound=${totals.notFound}, bad=${totals.badRows}`
     );
   }
 
@@ -706,7 +722,7 @@ function ImportTab(): React.ReactElement {
     try {
       setBusy(true);
       addLog(`Vald fil: ${file.name}`);
-      await runChunkedPriceImport(
+      await runBlobPriceImport(
         file,
         {
           fx,
@@ -905,7 +921,7 @@ function ImportTab(): React.ReactElement {
             <input type="checkbox" className="accent-amber-600" checked={dry} onChange={() => setDry(!dry)} />
             Dry-run (visa bara vad som skulle ändras)
           </label>
-          <span className="ml-auto text-xs opacity-60">Kör automatiskt {CHUNK_LIMIT} rader/körning</span>
+          <span className="ml-auto text-xs opacity-60">Kör automatiskt {CHUNK_ROWS} rader/körning</span>
         </div>
       </section>
 
