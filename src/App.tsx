@@ -49,6 +49,14 @@ function normalizeCategories(raw: any): WCCategory[] {
 /*                         Små hjälpare                                */
 /* ------------------------------------------------------------------ */
 
+// Tål både 13,5 och 13.5
+function parseNum(v: string | number, fallback = 0): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
+  const s = v.replace(/\s/g, "").replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 const brand = {
   card: "bg-white rounded-2xl shadow-sm border",
   chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
@@ -571,10 +579,10 @@ function ImportTab(): React.ReactElement {
   const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
   const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
 
-  // Chunk & batch (frontend-styrning)
-  const CHUNK_ROWS = 500;   // rader per serverkörning
-  const BATCH_SIZE = 250;   // rader per intern batch på servern
-  const SLEEP_MS   = 300;   // liten paus mellan delarna
+  // Chunk & batch (per din önskan: 500 rader per körning)
+  const CHUNK_ROWS = 500;    // rader per serverkörning
+  const INNER_BATCH = 250;   // rader per intern batch på servern
+  const PAUSE_MS = 600;      // liten paus mellan körningar
 
   useEffect(() => {
     (async () => {
@@ -609,10 +617,8 @@ function ImportTab(): React.ReactElement {
     try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
   }
 
-  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
   /** Prisfil: SAS -> PUT -> kör servern i chunkar om 500 rader tills klart */
-  async function runBlobPriceImport(
+  async function runChunkedPriceImport(
     file: File,
     opts: {
       fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
@@ -620,6 +626,18 @@ function ImportTab(): React.ReactElement {
     },
     addLogFn: (s: string) => void
   ): Promise<void> {
+    // Validering (hantera svensk decimal)
+    const fxNum = parseNum(String(opts.fx));
+    const markupNum = parseNum(String(opts.markupPct), 0);
+    if (!Number.isFinite(fxNum) || fxNum <= 0) {
+      addLogFn("Fel: Ogiltig valutakurs. Ange t.ex. 13,5 eller 13.5");
+      return;
+    }
+    if (!Number.isFinite(markupNum) || markupNum < 0) {
+      addLogFn("Fel: Ogiltigt påslag (%)");
+      return;
+    }
+
     const roundModeApi =
       opts.roundModeUI === "nearest" ? "near" :
       opts.roundModeUI === "up"      ? "up"   :
@@ -651,25 +669,26 @@ function ImportTab(): React.ReactElement {
     // 3) Kör servern i delkörningar
     let offset = 0;
     let part = 1;
-    let totals = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
+    let grand = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
 
     while (true) {
-      addLogFn(`Startar server-bearbetning (del ${part})… offset=${offset}, limit=${CHUNK_ROWS}`);
+      addLogFn(
+        `Startar server-bearbetning (del ${part})… ` +
+        `fx=${fxNum}, markup=${markupNum}, step=${stepApi}, round=${roundModeApi}, offset=${offset}, limit=${CHUNK_ROWS}`
+      );
 
       const body = {
         container,
         blobName,
-        fx: Number(opts.fx),
-        markupPct: Number(opts.markupPct),
+        fx: fxNum,
+        markupPct: markupNum,
         roundMode: roundModeApi,
         step: stepApi,
         publish: !!opts.publish,
         dryRun: !!opts.dryRun,
-        batchSize: BATCH_SIZE,
+        batchSize: INNER_BATCH,
         offset,
         limitRows: CHUNK_ROWS,
-        // sasUrl skickas med som fallback om kontonyckel saknas i Functions
-        sasUrl,
       };
 
       const procRes = await fetch("/api/price-upload-from-blob", {
@@ -677,7 +696,6 @@ function ImportTab(): React.ReactElement {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-
       const out = await safeJson(procRes);
       if (!procRes.ok || !out?.ok) {
         throw new Error(
@@ -687,33 +705,29 @@ function ImportTab(): React.ReactElement {
         );
       }
 
-      totals.updated  += Number(out.updated || 0);
-      totals.skipped  += Number(out.skipped || 0);
-      totals.notFound += Number(out.notFound || 0);
-      totals.badRows  += Number(out.badRows || 0);
-      totals.total     = Number(out.total || totals.total);
+      grand.updated  += Number(out.updated || 0);
+      grand.skipped  += Number(out.skipped || 0);
+      grand.notFound += Number(out.notFound || 0);
+      grand.badRows  += Number(out.badRows || 0);
+      grand.total     = Number(out.total || grand.total);
 
-      const r0 = out.range?.offset ?? offset;
-      const r1 = (out.range?.end ?? offset) - 1;
       addLogFn(
-        `Del ${part} klar: rader ${r0}–${r1}, ` +
+        `Del ${part} klar: rader ${out.range?.offset}–${(out.range?.end ?? 0) - 1}, ` +
         `updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`
       );
 
-      const next = out.nextOffset as number | null | undefined;
-      if (next === null || next === undefined || !Number.isFinite(Number(next))) break;
-      if (Number(next) <= offset) break; // skydd mot loop
-
-      offset = Number(next);
+      const next = out.nextOffset as number | null;
+      if (!next || next >= out.total) break;
+      offset = next;
       part++;
 
-      // liten paus mellan delarna så Woo/Functions får andrum
-      await sleep(SLEEP_MS);
+      // Liten paus för att låta WP/hosten andas
+      await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
 
     addLogFn(
-      `KLART: total=${totals.total}, updated=${totals.updated}, skipped=${totals.skipped}, ` +
-      `notFound=${totals.notFound}, bad=${totals.badRows}`
+      `KLART: total=${grand.total}, updated=${grand.updated}, skipped=${grand.skipped}, ` +
+      `notFound=${grand.notFound}, bad=${grand.badRows}`
     );
   }
 
@@ -722,7 +736,7 @@ function ImportTab(): React.ReactElement {
     try {
       setBusy(true);
       addLog(`Vald fil: ${file.name}`);
-      await runBlobPriceImport(
+      await runChunkedPriceImport(
         file,
         {
           fx,
@@ -858,21 +872,21 @@ function ImportTab(): React.ReactElement {
           <div>
             <label className="text-xs opacity-70">Valutakurs (GBP→SEK)</label>
             <input
-              type="number"
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               className="w-full rounded-lg border px-3 py-2"
-              value={fx}
-              onChange={(e) => setFx(Number(e.target.value) || 0)}
+              value={String(fx)}
+              onChange={(e) => setFx(parseNum(e.target.value, fx))}
             />
           </div>
           <div>
             <label className="text-xs opacity-70">Påslag (%)</label>
             <input
-              type="number"
-              step="0.1"
+              type="text"
+              inputMode="decimal"
               className="w-full rounded-lg border px-3 py-2"
-              value={markup}
-              onChange={(e) => setMarkup(Number(e.target.value) || 0)}
+              value={String(markup)}
+              onChange={(e) => setMarkup(parseNum(e.target.value, markup))}
             />
           </div>
           <div>
@@ -909,7 +923,7 @@ function ImportTab(): React.ReactElement {
             className="hidden"
             onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])}
           />
-          {busy ? "Bearbetar…" : "Välj fil…"}
+        {busy ? "Bearbetar…" : "Välj fil…"}
         </label>
 
         <div className="mt-3 flex items-center gap-4 text-sm">
