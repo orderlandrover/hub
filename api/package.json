@@ -8,15 +8,15 @@
   },
   "main": "dist/index.js",
   "scripts": {
-  "clean": "rimraf dist .tsbuildinfo",
-  "build": "tsc -p . && cpy \"host.json\" dist && node tools/write-dist-package.js",
-  "patch:scriptfile": "node tools/patch-scriptfile.js",
-  "start": "func start --javascript"
-},
+    "clean": "rimraf dist .tsbuildinfo",
+    "build": "tsc -p . && cpy \"host.json\" dist && node tools/write-dist-package.js",
+    "patch:scriptfile": "node tools/patch-scriptfile.js",
+    "start": "func start --javascript"
+  },
   "dependencies": {
     "@azure/functions": "^4.0.0",
-    "@azure/storage-blob": "^12.18.0",
-    "csv-parse": "^5.5.6"
+    "@azure/storage-blob": "^12.28.0",
+    "csv-parse": "^5.6.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
