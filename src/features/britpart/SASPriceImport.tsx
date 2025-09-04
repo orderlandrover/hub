@@ -127,24 +127,37 @@ export default function SASPriceImport() {
         )}
       </div>
 
-      <div className="flex items-center gap-3">
-        <button
-          id="btn-importera"
-          type="button"
-          onClick={() => { console.debug("[UI] klick: Importera"); runImport(); }}
-          disabled={importing || selected.length === 0}
-          aria-busy={importing}
-          className={"rounded px-4 py-2 text-white " +
-            (importing || selected.length === 0 ? "bg-gray-400 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-700")}
-          title={selected.length === 0 ? "Välj minst en subkategori" : "Starta import"}
-        >
-          {importing ? "Importerar…" : `Importera ${selected.length} valda`}
-        </button>
+      <div className="flex items-center gap-3 relative z-0">
+  <button
+    id="btn-importera"
+    type="button"
+    onClick={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.debug("[UI] klick på Importera", { selected });
+      void runImport();
+    }}
+    disabled={importing || selected.length === 0}
+    aria-busy={importing}
+    className={
+      "relative z-10 rounded px-4 py-2 text-white " +
+      (importing || selected.length === 0
+        ? "bg-gray-400 cursor-not-allowed"
+        : "bg-amber-600 hover:bg-amber-700")
+    }
+    title={selected.length === 0 ? "Välj minst en subkategori" : "Starta import"}
+  >
+    {importing ? "Importerar…" : `Importera ${selected.length} valda`}
+  </button>
 
-        {selected.length > 0 && (
-          <span className="text-xs text-slate-600">ID: {selected.join(", ").slice(0, 120)}{selected.join(", ").length > 120 ? "…" : ""}</span>
-        )}
-      </div>
+  {selected.length > 0 && (
+    <span className="text-xs text-slate-600">
+      ID: {selected.join(", ").slice(0, 120)}
+      {selected.join(", ").length > 120 ? "…" : ""}
+    </span>
+  )}
+</div>
+
 
       <div className="mt-4 space-y-2">
         {errMsg && <div className="text-red-700 bg-red-50 border border-red-200 rounded p-3">{errMsg}</div>}
