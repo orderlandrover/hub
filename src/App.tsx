@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import "./brand.css";
 import SASPriceImport from "./features/britpart/SASPriceImport";
 import ProductsTab from "./features/products/ProductsTab";
 
@@ -15,7 +16,7 @@ const API = {
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const r = await fetch(input, { headers: { "Content-Type": "application/json" }, ...init });
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(()=>"")}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(() => "")}`);
   return (await r.json()) as T;
 }
 
@@ -26,29 +27,23 @@ function classNames(...xs: Array<string | false | null | undefined>) {
 function Badge({ children }: { children: React.ReactNode }) {
   return <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{children}</span>;
 }
+
 function Button({
   children,
   onClick,
-  variant = "primary",
   disabled,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
-  variant?: "primary" | "outline" | "ghost";
   disabled?: boolean;
 }) {
-  const styles: Record<string, string> = {
-    primary: "bg-indigo-600 text-white hover:bg-indigo-700",
-    outline: "border border-gray-300 text-gray-900 hover:bg-gray-50",
-    ghost: "text-gray-900 hover:bg-gray-100",
-  };
+  // Använder din guldknapp via .ui-btn
   return (
     <button
       disabled={disabled}
       onClick={onClick}
       className={classNames(
-        "px-3 py-2 rounded-xl text-sm font-medium transition",
-        styles[variant],
+        "ui-btn px-3 py-2 rounded-xl text-sm font-semibold transition",
         disabled && "opacity-50 cursor-not-allowed"
       )}
     >
@@ -221,15 +216,23 @@ function WooCategoriesPanel() {
       </div>
       {!!data && (
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="ui-btn px-3 py-2 rounded-xl font-semibold"
+            disabled={page <= 1}
+          >
             Föregående
-          </Button>
+          </button>
           <Badge>
             Sida {data.page} / {data.pages}
           </Badge>
-          <Button variant="outline" onClick={() => setPage((p) => Math.min(data.pages, p + 1))} disabled={page >= (data.pages || 1)}>
+          <button
+            onClick={() => setPage((p) => Math.min(data.pages, p + 1))}
+            className="ui-btn px-3 py-2 rounded-xl font-semibold"
+            disabled={page >= (data.pages || 1)}
+          >
             Nästa
-          </Button>
+          </button>
         </div>
       )}
     </div>
@@ -243,7 +246,7 @@ const TABS = [
   { key: "categories", label: "Woo-kategorier" },
   { key: "logs", label: "Produkter" }, // visar vår ProductsTab under fliken "Produkter"
 ] as const;
-type TabKey = typeof TABS[number]["key"];
+type TabKey = (typeof TABS)[number]["key"];
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>("import");
@@ -251,36 +254,40 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b border-gray-200">
+      <header className="sticky top-0 z-10 ui-header border-b border-gray-800/30">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
-              Landroverdelar – Britpart ↔ WooCommerce
+              Björklin Motor - Landroverdelar.se
             </h1>
           </div>
-          <div className="hidden sm:flex items-center gap-2 text-xs text-gray-500">
+          <div className="hidden sm:flex items-center gap-2 text-xs">
             <Badge>Endast “subkategorier” (ID-filter)</Badge>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        <nav className="flex flex-wrap gap-2">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={classNames(
-                "px-3 py-2 rounded-xl text-sm border transition",
-                tab === t.key
-                  ? "bg-indigo-600 text-white border-indigo-600"
-                  : "bg-white text-gray-900 border-gray-200 hover:bg-gray-50"
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* Flikar med dina färger */}
+        <nav className="flex flex-wrap gap-3">
+          {TABS.map((t) => {
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={classNames(
+                  "ui-btn px-4 py-2 rounded-lg font-semibold",
+                  active ? "" : "opacity-80"
+                )}
+                aria-pressed={active}
+                aria-current={active ? "page" : undefined}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </nav>
 
         {tab === "import" && (
