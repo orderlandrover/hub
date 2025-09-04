@@ -88,7 +88,7 @@ app.http("import-run", {
       };
 
       const publish = !!body.publish;
-      const defaultStock = Number(body.defaultStock ?? 100);
+      const defaultStock = Number.isFinite(Number(body.defaultStock)) ? Number(body.defaultStock) : 100;
       const forcedWooCategoryId = body.wooCategoryId ? Number(body.wooCategoryId) : undefined;
       const debug = !!body.debug || req.query.get("debug") === "1";
       const limit = Math.max(0, Number(body.limit ?? 0));

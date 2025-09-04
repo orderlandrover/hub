@@ -2,15 +2,46 @@
 import { env } from "./env";
 
 /**
- * ENV som används:
- *  - WP_URL     (ex: https://landroverdelar.se) – ingen slash på slutet
- *  - WC_KEY     (Woo consumer key)
- *  - WC_SECRET  (Woo consumer secret)
+ * ENV som stöds (alla är valfria alias, välj en uppsättning):
+ *  - WP_URL / WC_BASE  (ex: https://landroverdelar.se) – ingen slash på slutet
+ *  - WC_KEY / WC_CONSUMER_KEY
+ *  - WC_SECRET / WC_CONSUMER_SECRET
  */
 
-const WP_URL = (env.WP_URL || "").replace(/\/+$/, "");
-const WC_KEY = env.WC_KEY || "";
-const WC_SECRET = env.WC_SECRET || "";
+/* --------------------------------------------------------------- */
+/* Säker env-läsning                                               */
+/* --------------------------------------------------------------- */
+
+function getWooConfig() {
+  const baseRaw =
+    (env as any)?.WP_URL ??
+    (env as any)?.WC_BASE ??
+    process.env.WP_URL ??
+    process.env.WC_BASE ??
+    "";
+
+  const key =
+    (env as any)?.WC_KEY ??
+    (env as any)?.WC_CONSUMER_KEY ??
+    process.env.WC_KEY ??
+    process.env.WC_CONSUMER_KEY ??
+    "";
+
+  const secret =
+    (env as any)?.WC_SECRET ??
+    (env as any)?.WC_CONSUMER_SECRET ??
+    process.env.WC_SECRET ??
+    process.env.WC_CONSUMER_SECRET ??
+    "";
+
+  const base = String(baseRaw).replace(/\/+$/, "");
+  if (!base) throw new Error("Woo env saknas: WP_URL eller WC_BASE");
+  if (!key || !secret) throw new Error("Woo env saknas: WC_KEY/WC_SECRET (eller WC_CONSUMER_KEY/_SECRET)");
+
+  const authHeader = "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
+
+  return { base, key, secret, authHeader };
+}
 
 /* --------------------------------------------------------------- */
 /* Typer                                                           */
@@ -31,28 +62,15 @@ export type WooUpdate = {
 /* Helpers                                                         */
 /* --------------------------------------------------------------- */
 
-function requireEnv() {
-  if (!WP_URL || !WC_KEY || !WC_SECRET) {
-    throw new Error("Woo env saknas: WP_URL/WC_KEY/WC_SECRET");
-  }
-}
-
-function authHeader(): string {
-  return "Basic " + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString("base64");
-}
-
 function ensureLeadingSlash(p: string) {
   return p.startsWith("/") ? p : `/${p}`;
 }
 
-/** Bygg en full URL mot WP/Woo */
-function buildUrl(path: string): string {
-  if (!/^https?:\/\//i.test(path)) {
-    if (path.startsWith("/wp-json")) return `${WP_URL}${path}`;
-    path = `/wp-json/wc/v3${ensureLeadingSlash(path)}`;
-    return `${WP_URL}${path}`;
-  }
-  return path;
+/** Bygg en full REST-URL mot Woo */
+function buildUrl(base: string, path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith("/wp-json")) return `${base}${path}`;
+  return `${base}/wp-json/wc/v3${ensureLeadingSlash(path)}`;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,29 +85,50 @@ export async function readJsonSafe<T = any>(res: Response): Promise<T> {
 }
 
 /* --------------------------------------------------------------- */
-/* wcFetch med enkel backoff                                       */
+/* wcFetch med backoff + auth-fallback                             */
 /* --------------------------------------------------------------- */
 
 export async function wcFetch(path: string, init?: RequestInit): Promise<Response> {
-  requireEnv();
-  const url = buildUrl(path);
-  const headers: Record<string, string> = {
-    Authorization: authHeader(),
-    "Content-Type": "application/json",
-    ...(init?.headers as Record<string, string> | undefined),
-  };
+  const { base, key, secret, authHeader } = getWooConfig();
+  const urlBase = buildUrl(base, path);
+
+  // Försök 1: Basic auth. Om 401/403 → försök 2: query-auth.
+  let tryQueryAuth = false;
 
   let lastErr: any;
   for (let attempt = 0; attempt < 5; attempt++) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(init?.headers as Record<string, string> | undefined),
+      ...(tryQueryAuth ? {} : { Authorization: authHeader }),
+    };
+
+    // Lägg till query-auth endast när vi bestämt oss att prova fallback
+    const url = tryQueryAuth
+      ? (() => {
+          const u = new URL(urlBase);
+          u.searchParams.set("consumer_key", key);
+          u.searchParams.set("consumer_secret", secret);
+          return u.toString();
+        })()
+      : urlBase;
+
     try {
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
 
-      // 429/5xx => backoff
+      // 401/403 => prova en gång med query-auth (många hostningar blockerar Basic på PUT/POST)
+      if (!tryQueryAuth && (res.status === 401 || res.status === 403)) {
+        tryQueryAuth = true;
+        continue;
+      }
+
+      // 429/5xx => backoff, annars kasta feltext
       if (res.status === 429 || res.status >= 500) {
         await sleep(400 + attempt * 300);
         continue;
       }
+
       const body = await res.text();
       throw new Error(`Woo ${res.status}: ${body}`);
     } catch (e) {
@@ -97,6 +136,7 @@ export async function wcFetch(path: string, init?: RequestInit): Promise<Respons
       await sleep(400 + attempt * 300);
     }
   }
+
   throw lastErr ?? new Error("wcFetch failed");
 }
 
@@ -124,8 +164,7 @@ export async function wcFindProductIdBySku(sku: string): Promise<number | null> 
   const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
   if (!res.ok) return null;
   const arr = await readJsonSafe<any[]>(res);
-  if (Array.isArray(arr) && arr[0]?.id) return Number(arr[0].id);
-  return null;
+  return Array.isArray(arr) && arr[0]?.id ? Number(arr[0].id) : null;
 }
 
 /** Batch-uppdatera produkter (max 100 per request). Returnerar antal uppdaterade. */
