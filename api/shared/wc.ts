@@ -1,13 +1,41 @@
 // api/shared/wc.ts
 import { env } from "./env";
 
-const WP_URL = env.WP_URL.replace(/\/$/, "");
-const WC_KEY = env.WC_KEY;
-const WC_SECRET = env.WC_SECRET;
+/**
+ * ENV som används:
+ *  - WP_URL     (ex: https://landroverdelar.se) – ingen slash på slutet
+ *  - WC_KEY     (Woo consumer key)
+ *  - WC_SECRET  (Woo consumer secret)
+ */
+
+const WP_URL = (env.WP_URL || "").replace(/\/+$/, "");
+const WC_KEY = env.WC_KEY || "";
+const WC_SECRET = env.WC_SECRET || "";
 
 /* --------------------------------------------------------------- */
-/* helpers                                                         */
+/* Typer                                                           */
 /* --------------------------------------------------------------- */
+
+export type WooStatus = "publish" | "draft" | "private" | "pending";
+
+export type WooUpdate = {
+  id: number;
+  regular_price?: string;
+  status?: WooStatus;
+  manage_stock?: boolean;
+  stock_quantity?: number | null;
+  stock_status?: "instock" | "outofstock" | "onbackorder";
+};
+
+/* --------------------------------------------------------------- */
+/* Helpers                                                         */
+/* --------------------------------------------------------------- */
+
+function requireEnv() {
+  if (!WP_URL || !WC_KEY || !WC_SECRET) {
+    throw new Error("Woo env saknas: WP_URL/WC_KEY/WC_SECRET");
+  }
+}
 
 function authHeader(): string {
   return "Basic " + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString("base64");
@@ -17,21 +45,18 @@ function ensureLeadingSlash(p: string) {
   return p.startsWith("/") ? p : `/${p}`;
 }
 
-/** Bygg en full URL mot WP/Woo:
- * - Om path börjar med "http" → returnera som den är.
- * - Om path börjar med "/wp-json" → prefixed med WP_URL.
- * - Annars → tolka som Woo-route och prefixa "/wp-json/wc/v3".
- */
+/** Bygg en full URL mot WP/Woo */
 function buildUrl(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  if (path.startsWith("/wp-json")) return `${WP_URL}${path}`;
-  return `${WP_URL}/wp-json/wc/v3${ensureLeadingSlash(path)}`;
+  if (!/^https?:\/\//i.test(path)) {
+    if (path.startsWith("/wp-json")) return `${WP_URL}${path}`;
+    path = `/wp-json/wc/v3${ensureLeadingSlash(path)}`;
+    return `${WP_URL}${path}`;
+  }
+  return path;
 }
 
-/** Liten delay */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Säker JSON-parse med förbättrat felmeddelande – används brett */
 export async function readJsonSafe<T = any>(res: Response): Promise<T> {
   const txt = await res.text();
   try {
@@ -42,15 +67,11 @@ export async function readJsonSafe<T = any>(res: Response): Promise<T> {
 }
 
 /* --------------------------------------------------------------- */
-/* wcFetch med backoff                                              */
+/* wcFetch med enkel backoff                                       */
 /* --------------------------------------------------------------- */
 
-/** wcFetch:
- * - Prefixar bas-url korrekt
- * - Sätter auth + JSON headers
- * - Retries/backoff på 429/5xx
- */
 export async function wcFetch(path: string, init?: RequestInit): Promise<Response> {
+  requireEnv();
   const url = buildUrl(path);
   const headers: Record<string, string> = {
     Authorization: authHeader(),
@@ -64,12 +85,11 @@ export async function wcFetch(path: string, init?: RequestInit): Promise<Respons
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
 
+      // 429/5xx => backoff
       if (res.status === 429 || res.status >= 500) {
-        // enkel exponential-ish backoff
         await sleep(400 + attempt * 300);
         continue;
       }
-      // för 4xx (utom 429) – kasta direkt med kropp för bättre felsökning
       const body = await res.text();
       throw new Error(`Woo ${res.status}: ${body}`);
     } catch (e) {
@@ -81,7 +101,7 @@ export async function wcFetch(path: string, init?: RequestInit): Promise<Respons
 }
 
 /* --------------------------------------------------------------- */
-/* Små bekvämligheter                                               */
+/* Bekvämligheter                                                   */
 /* --------------------------------------------------------------- */
 
 export async function wcGetJSON<T = any>(path: string): Promise<T> {
@@ -99,40 +119,24 @@ export async function wcPutJSON<T = any>(path: string, payload: any): Promise<T>
   return readJsonSafe<T>(res);
 }
 
-export async function wcDelete(path: string): Promise<Response> {
-  return wcFetch(path, { method: "DELETE" });
-}
-
-/** Hämta alla sidor för en Woo-endpoint som stödjer per_page/page */
-export async function wcListAll<T = any>(route: string, perPage = 100): Promise<T[]> {
-  let page = 1;
-  const out: T[] = [];
-  for (;;) {
-    const res = await wcFetch(`${route}${route.includes("?") ? "&" : "?"}per_page=${perPage}&page=${page}`);
-    const chunk = await readJsonSafe<T[]>(res);
-    if (!Array.isArray(chunk) || chunk.length === 0) break;
-    out.push(...chunk);
-    if (chunk.length < perPage) break;
-    page++;
-  }
-  return out;
-}
-
-/* --------------------------------------------------------------- */
-/* Vanliga operationer                                              */
-/* --------------------------------------------------------------- */
-
-export async function wcFindProductBySku(sku: string): Promise<any | null> {
+/** Hämta produkt via SKU → returnera första träffen eller null */
+export async function wcFindProductIdBySku(sku: string): Promise<number | null> {
   const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
   if (!res.ok) return null;
   const arr = await readJsonSafe<any[]>(res);
-  return Array.isArray(arr) && arr[0] ? arr[0] : null;
+  if (Array.isArray(arr) && arr[0]?.id) return Number(arr[0].id);
+  return null;
 }
 
-export async function wcCreateProduct(payload: any): Promise<Response> {
-  return wcFetch(`/products`, { method: "POST", body: JSON.stringify(payload) });
-}
+/** Batch-uppdatera produkter (max 100 per request). Returnerar antal uppdaterade. */
+export async function wcBatchUpdateProducts(updates: WooUpdate[]): Promise<number> {
+  if (!updates.length) return 0;
 
-export async function wcUpdateProduct(id: number, payload: any): Promise<Response> {
-  return wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+  let done = 0;
+  for (let i = 0; i < updates.length; i += 100) {
+    const chunk = updates.slice(i, i + 100);
+    const res = await wcPostJSON<{ update?: any[] }>(`/products/batch`, { update: chunk });
+    done += Array.isArray(res.update) ? res.update.length : 0;
+  }
+  return done;
 }
