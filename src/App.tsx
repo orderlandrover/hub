@@ -255,7 +255,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="sticky top-0 z-10 ui-header border-b border-gray-800/30">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="w-full max-w-none px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
@@ -268,7 +268,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="w-full max-w-none px-4 sm:px-6 lg:px-8 py-6">
         {/* Flikar med dina färger */}
         <nav className="flex flex-wrap gap-3">
           {TABS.map((t) => {
