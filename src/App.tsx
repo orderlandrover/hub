@@ -1,1016 +1,695 @@
-// src/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import "./brand.css";
+import { useEffect, useRef, useMemo, useState } from "react";
+import ProductsTab from "./features/products/ProductsTab";
+import { SASPriceImportPanel, QuickImportOne } from "./features/britpart/SASPriceImport";
 
-/* ------------------------------------------------------------------ */
-/*                              Typer                                  */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+ *  APP – Britpart/WooCommerce UI (slimmad + extra flikar)
+ * ------------------------------------------------------------------ */
 
-type WCProduct = {
+/* ------------------------------ Typer ------------------------------ */
+export type WCProduct = {
   id: number;
   name: string;
   sku: string;
   status: "publish" | "draft" | "pending" | "private";
   regular_price?: string;
+  sale_price?: string | null;
   stock_status?: string;
   stock_quantity?: number | null;
   categories?: { id: number; name?: string }[];
   images?: { src: string }[];
 };
 
-type ListResponse = { items: WCProduct[]; total: number; pages: number; page: number };
-type WCCategory = { id: number; name: string; parent: number };
-type RoundModeUI = "nearest" | "up" | "down" | "none";
+export type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
+export type WCCategory = { id: number; name: string; parent: number };
+export type Subcategory = { id: number; title: string; parentId?: number };
+export type LogEntry = { ts: string; level: "info" | "warn" | "error"; msg: string };
+export type RoundModeUI = "nearest" | "up" | "down" | "none";
 
-/* ------------------------------------------------------------------ */
-/*                          Normaliserare                              */
-/* ------------------------------------------------------------------ */
-
-function normalizeList(raw: any): ListResponse {
-  if (Array.isArray(raw)) {
-    return { items: raw as WCProduct[], total: raw.length, pages: 1, page: 1 };
-  }
-  const items: WCProduct[] =
-    Array.isArray(raw?.items) ? raw.items :
-    Array.isArray(raw?.parts) ? raw.parts : [];
-  const total = Number(raw?.total ?? items.length ?? 0);
-  const pages = Number(raw?.pages ?? raw?.totalPages ?? 1);
-  const page  = Number(raw?.page ?? 1);
-  return { items, total, pages, page };
-}
-
-function normalizeCategories(raw: any): WCCategory[] {
-  if (Array.isArray(raw)) return raw as WCCategory[];
-  if (Array.isArray(raw?.items)) return raw.items as WCCategory[];
-  return [];
-}
-
-/* ------------------------------------------------------------------ */
-/*                         Små hjälpare                                */
-/* ------------------------------------------------------------------ */
-
-// Tål både 13,5 och 13.5
-function parseNum(v: string | number, fallback = 0): number {
-  if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
-  const s = v.replace(/\s/g, "").replace(",", ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-const brand = {
-  card: "bg-white rounded-2xl shadow-sm border",
-  chip: "inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize",
+export type ScheduleConfig = {
+  enabled: boolean;
+  hour: number;   // 0-23
+  minute: number; // 0-59
+  subcategoryIds: number[];
 };
 
-/* =================================================================== */
-/*                                App                                   */
-/* =================================================================== */
+export type PriceUpdateRow = {
+  sku: string;
+  regular_price?: number | null;
+  sale_price?: number | null;
+  stock_quantity?: number | null;
+  status?: "publish" | "draft" | "private" | "pending";
+};
 
-export default function App(): React.ReactElement {
-  const [tab, setTab] = useState<"products" | "import">("products");
+/* ----------------------------- Konstanter ----------------------------- */
+const API = {
+  BRITPART_SUBCATS: "/api/britpart-subcategories", // GET -> { items: Subcategory[] }
+  IMPORT_PRODUCTS: "/api/britpart-import",         // POST -> { imported, created, updated }
+  WC_CATEGORIES: "/api/wc-categories",             // GET -> ListResponse<WCCategory>
+  WC_PRODUCTS: "/api/wc-products",                 // GET -> ListResponse<WCProduct>
+  UPDATE_PRICES: "/api/wc-products/update-prices", // POST -> { updated, failed, errors? }
+  LOGS: "/api/logs",                               // GET -> ListResponse<LogEntry>
+  SCHEDULES: "/api/schedules",                     // GET/POST -> ScheduleConfig
+} as const;
 
-  const header = useMemo(
-    () => (
-      <header className="ui-header sticky top-0 z-20 shadow">
-        <div className="w-full px-6 py-4 flex items-center justify-between">
-          <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
-            Björklin Motor
-          </h1>
-          <a
-            href="https://landroverdelar.se"
-            className="text-sm opacity-80 hover:opacity-100"
-            rel="noreferrer"
-          >
-            Björklin Motor AB · landroverdelar.se
-          </a>
-        </div>
-      </header>
-    ),
-    []
+/* ---------------------------- Hjälpfunktioner ---------------------------- */
+async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const r = await fetch(input, {
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    ...init,
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`HTTP ${r.status}: ${text || r.statusText}`);
+  }
+  return (await r.json()) as T;
+}
+
+function classNames(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
+}
+
+function useDebounced<T>(value: T, delay = 400) {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return v;
+}
+
+/* ----------------------------- UI-Komponenter ----------------------------- */
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-white rounded-2xl shadow p-5 border border-gray-200">
+      <div className="mb-4">
+        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
   );
+}
+
+function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "success" | "warn" | "error" }) {
+  const palette: Record<string, string> = {
+    neutral: "bg-gray-100 text-gray-700",
+    success: "bg-emerald-100 text-emerald-700",
+    warn: "bg-amber-100 text-amber-800",
+    error: "bg-rose-100 text-rose-700",
+  };
+  return <span className={classNames("px-2 py-0.5 rounded text-xs", palette[tone])}>{children}</span>;
+}
+
+function Button({ children, onClick, variant = "primary", disabled }: { children: React.ReactNode; onClick?: () => void; variant?: "primary" | "ghost" | "outline"; disabled?: boolean }) {
+  const styles: Record<string, string> = {
+    primary: "bg-indigo-600 hover:bg-indigo-700 text-white",
+    ghost: "bg-transparent hover:bg-gray-100 text-gray-800",
+    outline: "border border-gray-300 hover:bg-gray-50 text-gray-800",
+  };
+  return (
+    <button disabled={disabled} onClick={onClick} className={classNames("px-3 py-2 rounded-xl text-sm font-medium transition", styles[variant], disabled && "opacity-50 cursor-not-allowed")}>{children}</button>
+  );
+}
+
+function Chip({ label, onRemove }: { label: string; onRemove?: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 bg-gray-100 rounded-full px-3 py-1 text-xs text-gray-800">
+      {label}
+      {onRemove && (
+        <button onClick={onRemove} className="ml-1 hover:text-rose-600" title="Ta bort">×</button>
+      )}
+    </span>
+  );
+}
+
+/* ------------------------ Subkategori Multiselect ------------------------ */
+function SubcategorySelector({
+  selected,
+  onChange,
+}: {
+  selected: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const [subcats, setSubcats] = useState<Subcategory[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const q = useDebounced(query);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        const res = await jsonFetch<{ items: Subcategory[] }>(`${API.BRITPART_SUBCATS}`);
+        if (!alive) return;
+        const sorted = [...res.items].sort((a, b) => a.title.localeCompare(b.title, "sv"));
+        setSubcats(sorted);
+      } catch (e) {
+        console.error(e);
+        alert(`Kunde inte hämta Britpart-subkategorier. Kontrollera API: ${API.BRITPART_SUBCATS}`);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!subcats) return [];
+    if (!q) return subcats;
+    const s = q.toLowerCase();
+    return subcats.filter((x) => x.title.toLowerCase().includes(s) || String(x.id).includes(s));
+  }, [subcats, q]);
+
+  const toggle = (id: number) => {
+    if (selected.includes(id)) onChange(selected.filter((x) => x !== id));
+    else onChange([...selected, id]);
+  };
+
+  const clearAll = () => onChange([]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {header}
-
-      <main className="w-full px-6 py-6">
-        <div className="mb-6 flex gap-2">
-          <button className="px-4 py-2 rounded-lg ui-btn" onClick={() => setTab("products")}>
-            Produkter
-          </button>
-          <button className="px-4 py-2 rounded-lg ui-btn" onClick={() => setTab("import")}>
-            Import & synk
-          </button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Sök på namn eller ID…" className="border border-gray-300 rounded-xl px-3 py-2 text-sm w-64" />
+        <Badge tone="neutral">{loading ? "Laddar…" : `${filtered.length} träffar`}</Badge>
+        {!!selected.length && (
+          <>
+            <Badge tone="success">{selected.length} valda</Badge>
+            <Button variant="ghost" onClick={clearAll}>Rensa val</Button>
+          </>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-[420px] overflow-auto rounded-xl border border-gray-200 p-2">
+        {filtered.map((sc) => (
+          <label key={sc.id} className={classNames("flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer border transition", selected.includes(sc.id) ? "bg-indigo-50 border-indigo-300" : "bg-white hover:bg-gray-50 border-gray-200")}> 
+            <input type="checkbox" checked={selected.includes(sc.id)} onChange={() => toggle(sc.id)} className="accent-indigo-600" />
+            <span className="text-sm font-medium text-gray-800">{sc.title}</span>
+            <span className="ml-auto text-xs text-gray-500">#{sc.id}</span>
+          </label>
+        ))}
+        {!loading && filtered.length === 0 && (
+          <div className="text-sm text-gray-500 p-4">Inga subkategorier matchar din sökning.</div>
+        )}
+      </div>
+      {!!selected.length && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {selected.map((id) => (
+            <Chip key={id} label={`#${id}`} onRemove={() => toggle(id)} />
+          ))}
         </div>
+      )}
+    </div>
+  );
+}
 
-        {tab === "products" ? <ProductsTab /> : <ImportTab />}
+/* --------------------------- Import-panelen --------------------------- */
+function ImportPanel({ selected, onImported }: { selected: number[]; onImported: (stats: { imported: number; created: number; updated: number }) => void }) {
+  const [perPage, setPerPage] = useState(200);
+  const [roundMode, setRoundMode] = useState<RoundModeUI>("none");
+  const [roundTo, setRoundTo] = useState<number>(1);
+  const [busy, setBusy] = useState(false);
+
+  const importNow = async () => {
+    if (!selected.length) {
+      alert("Välj minst en subkategori först.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const payload = {
+        subcategoryIds: selected,
+        options: { perPage, roundMode, roundTo },
+      };
+      const res = await jsonFetch<{ imported: number; created: number; updated: number }>(API.IMPORT_PRODUCTS, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      onImported(res);
+    } catch (e) {
+      console.error(e);
+      alert(`Importen misslyckades: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Per sida vid hämtning</label>
+          <input type="number" min={50} max={500} value={perPage} onChange={(e) => setPerPage(Math.max(1, Number(e.target.value) || 200))} className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+          <p className="text-xs text-gray-500 mt-1">Backend bör paginera tills allt är hämtat.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Avrundningsläge</label>
+          <select value={roundMode} onChange={(e) => setRoundMode(e.target.value as RoundModeUI)} className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm">
+            <option value="none">Ingen</option>
+            <option value="nearest">Närmaste</option>
+            <option value="up">Uppåt</option>
+            <option value="down">Nedåt</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Avrunda till</label>
+          <input type="number" min={1} step={1} value={roundTo} onChange={(e) => setRoundTo(Math.max(1, Number(e.target.value) || 1))} className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+          <p className="text-xs text-gray-500 mt-1">Ex: 1=hela kr, 5=femkronorssteg.</p>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <Button onClick={importNow} disabled={busy}>{busy ? "Importerar…" : `Importera ${selected.length} valda`}</Button>
+        <Badge tone="neutral">ID: {selected.join(", ") || "–"}</Badge>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------ Excel/Pris-uppdateringar ------------------------ */
+function ExcelPricePanel() {
+  const [rows, setRows] = useState<PriceUpdateRow[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const parseFile = async (file: File) => {
+    try {
+      setParsing(true);
+      // Typad dynamic import med try/catch (undviker TS2347)
+      let XLSX: typeof import("xlsx");
+      try {
+        XLSX = (await import("xlsx")) as typeof import("xlsx");
+      } catch {
+        alert("Kunde inte ladda 'xlsx'. Installera: npm i xlsx");
+        return;
+      }
+
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const opts: any = { raw: false, defval: "" };
+      const json = XLSX.utils.sheet_to_json<any>(ws, opts);
+      const out: PriceUpdateRow[] = json
+        .map((r: any) => ({
+          sku: String(r.sku ?? r.SKU ?? r.Sku ?? r.SkU ?? "").trim(),
+          regular_price: r.regular_price !== "" ? Number(r.regular_price) : null,
+          sale_price: r.sale_price !== "" ? Number(r.sale_price) : null,
+          stock_quantity: r.stock_quantity !== "" ? Number(r.stock_quantity) : null,
+          status: r.status || undefined,
+        }))
+        .filter((x: PriceUpdateRow) => x.sku);
+      setRows(out);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const send = async () => {
+    if (!rows.length) { alert("Ladda upp en Excel först."); return; }
+    try {
+      const res = await jsonFetch<{ updated: number; failed: number; errors?: string[] }>(API.UPDATE_PRICES, {
+        method: "POST",
+        body: JSON.stringify({ items: rows }),
+      });
+      alert(`Klart! Uppdaterade: ${res.updated}. Misslyckade: ${res.failed}`);
+    } catch (e) {
+      console.error(e);
+      alert(`Kunde inte skicka prisuppdatering: ${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <input ref={inputRef} type="file" accept=".xlsx,.xls" onChange={(e) => e.target.files?.[0] && parseFile(e.target.files[0])} className="block" />
+        {parsing && <Badge tone="neutral">Läser Excel…</Badge>}
+        {!!rows.length && <Badge tone="success">{rows.length} rader redo</Badge>}
+        <Button onClick={send} disabled={!rows.length}>Skicka till WooCommerce</Button>
+        <Button variant="ghost" onClick={() => { setRows([]); if (inputRef.current) inputRef.current.value = ""; }}>Rensa</Button>
+      </div>
+
+      {!!rows.length && (
+        <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-3 py-2">SKU</th>
+                <th className="text-right px-3 py-2">Ord. pris</th>
+                <th className="text-right px-3 py-2">Kampanjpris</th>
+                <th className="text-right px-3 py-2">Lager</th>
+                <th className="text-left px-3 py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 300).map((r, i) => (
+                <tr key={i} className={i % 2 ? "bg-white" : "bg-gray-50"}>
+                  <td className="px-3 py-2 font-mono">{r.sku}</td>
+                  <td className="px-3 py-2 text-right">{r.regular_price ?? ""}</td>
+                  <td className="px-3 py-2 text-right">{r.sale_price ?? ""}</td>
+                  <td className="px-3 py-2 text-right">{r.stock_quantity ?? ""}</td>
+                  <td className="px-3 py-2">{r.status ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length > 300 && (
+            <div className="text-xs text-gray-500 p-2">Visar de första 300 raderna av {rows.length}…</div>
+          )}
+        </div>
+      )}
+
+      <p className="text-xs text-gray-500">Tips: Kolumnnamn kan vara små/stora bokstäver. Minst SKU krävs.</p>
+    </div>
+  );
+}
+
+/* ------------------------------ Schemaläggning ------------------------------ */
+function SchedulePanel({ selected }: { selected: number[] }) {
+  const [cfg, setCfg] = useState<ScheduleConfig>({ enabled: false, hour: 2, minute: 15, subcategoryIds: [] });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        let server: ScheduleConfig | null = null;
+        try {
+          server = await jsonFetch<ScheduleConfig>(API.SCHEDULES);
+        } catch {
+          server = null;
+        }
+        if (!alive) return;
+        if (server) setCfg(server);
+        else {
+          const ls = localStorage.getItem("bp_schedule");
+          if (ls) setCfg(JSON.parse(ls));
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (selected.length) setCfg((prev) => ({ ...prev, subcategoryIds: selected }));
+  }, [selected]);
+
+  const save = async () => {
+    try {
+      let res: ScheduleConfig | null = null;
+      try {
+        res = await jsonFetch<ScheduleConfig>(API.SCHEDULES, { method: "POST", body: JSON.stringify(cfg) });
+      } catch {
+        res = null;
+      }
+      if (res) {
+        setCfg(res);
+        alert("Schema sparat på servern.");
+      } else {
+        localStorage.setItem("bp_schedule", JSON.stringify(cfg));
+        alert("Schema sparat lokalt (fallback). Implementera /api/schedules i backend för serverlagring.");
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Kunde inte spara schema: ${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg({ ...cfg, enabled: e.target.checked })} className="accent-indigo-600" />
+          <span className="text-sm">Aktivera nattimport</span>
+        </label>
+        {loading && <Badge tone="neutral">Laddar…</Badge>}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Timme</label>
+          <input type="number" min={0} max={23} value={cfg.hour} onChange={(e) => setCfg({ ...cfg, hour: clampInt(e.target.value, 0, 23) })} className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Minut</label>
+          <input type="number" min={0} max={59} value={cfg.minute} onChange={(e) => setCfg({ ...cfg, minute: clampInt(e.target.value, 0, 59) })} className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Subkategorier</label>
+          <div className="flex flex-wrap gap-2">
+            {(cfg.subcategoryIds || []).map((id) => <Chip key={id} label={`#${id}`} />)}
+            {!cfg.subcategoryIds?.length && <span className="text-xs text-gray-500">Inga val ännu – synkas från huvudvyn.</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <Button onClick={save}>Spara schema</Button>
+        <Badge tone="neutral">Kör ~{cfg.hour.toString().padStart(2, "0")}:{cfg.minute.toString().padStart(2, "0")} dagligen</Badge>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Woo-kategorier ------------------------------- */
+function WooCategoriesPanel() {
+  const [data, setData] = useState<ListResponse<WCCategory> | null>(null);
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(50);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        const url = `${API.WC_CATEGORIES}?page=${page}&per_page=${perPage}`;
+        const res = await jsonFetch<ListResponse<WCCategory>>(url);
+        if (!alive) return;
+        setData(res);
+      } catch (e) {
+        console.error(e);
+        alert(`Kunde inte hämta Woo-kategorier. Kontrollera API: ${API.WC_CATEGORIES}`);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [page, perPage]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <label className="text-sm">Per sida</label>
+        <input type="number" className="w-24 border border-gray-300 rounded-xl px-3 py-1.5 text-sm" value={perPage} onChange={(e) => setPerPage(Math.max(10, Number(e.target.value) || 50))} />
+        <Badge tone="neutral">Totalt: {data?.total ?? "–"}</Badge>
+        {loading && <Badge tone="neutral">Laddar…</Badge>}
+      </div>
+      <div className="border border-gray-200 rounded-xl overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-left px-3 py-2">ID</th>
+              <th className="text-left px-3 py-2">Namn</th>
+              <th className="text-left px-3 py-2">Parent</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data?.items.map((c) => (
+              <tr key={c.id} className="odd:bg-white even:bg-gray-50">
+                <td className="px-3 py-2 font-mono">{c.id}</td>
+                <td className="px-3 py-2">{c.name}</td>
+                <td className="px-3 py-2">{c.parent || 0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!!data && (
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>Föregående</Button>
+          <Badge tone="neutral">Sida {data.page} / {data.pages}</Badge>
+          <Button variant="outline" onClick={() => setPage((p) => Math.min(data.pages, p + 1))} disabled={page >= data.pages}>Nästa</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------- Logg-vy -------------------------------- */
+function LogsPanel() {
+  const [data, setData] = useState<ListResponse<LogEntry> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        let res: ListResponse<LogEntry> | null = null;
+        try {
+          res = await jsonFetch<ListResponse<LogEntry>>(`${API.LOGS}?page=1&per_page=200`);
+        } catch {
+          res = null;
+        }
+        if (!alive) return;
+        setData(res);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [refresh]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2 items-center">
+        <Button variant="outline" onClick={() => setRefresh((x: number) => x + 1)}>Uppdatera</Button>
+        {loading && <Badge tone="neutral">Laddar…</Badge>}
+      </div>
+      <div className="border border-gray-200 rounded-xl overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-left px-3 py-2">Tid</th>
+              <th className="text-left px-3 py-2">Nivå</th>
+              <th className="text-left px-3 py-2">Meddelande</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.items || []).map((l, i) => (
+              <tr key={i} className="odd:bg-white even:bg-gray-50">
+                <td className="px-3 py-2 whitespace-nowrap font-mono text-xs">{l.ts}</td>
+                <td className="px-3 py-2"><Badge tone={l.level === "error" ? "error" : l.level === "warn" ? "warn" : "neutral"}>{l.level}</Badge></td>
+                <td className="px-3 py-2">{l.msg}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!data && <p className="text-sm text-gray-500">Ingen loggdata hittades. Implementera {API.LOGS} i backend.</p>}
+    </div>
+  );
+}
+
+/* --------------------------------- APP --------------------------------- */
+const TABS = [
+  { key: "import", label: "Importera Britpart" },
+  { key: "schedule", label: "Schemalägg nattimport" },
+  { key: "excel", label: "Prisuppdatering (Excel)" },
+  { key: "categories", label: "Woo-kategorier" },
+  { key: "logs", label: "Loggar" },
+  { key: "products", label: "Produkter" },       // NYTT
+  { key: "advanced", label: "Avancerad import" }, // NYTT
+] as const;
+
+type TabKey = typeof TABS[number]["key"];
+
+export default function App() {
+  const [tab, setTab] = useState<TabKey>("import");
+  const [selected, setSelected] = useState<number[]>([]);
+  const [importStats, setImportStats] = useState<{ imported: number; created: number; updated: number } | null>(null);
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🛠️</span>
+            <h1 className="text-lg sm:text-xl font-semibold tracking-tight">Landroverdelar – Britpart ↔ WooCommerce</h1>
+          </div>
+          <div className="hidden sm:flex items-center gap-2 text-xs text-gray-500">
+            <Badge>Endast *subkategorier* (ID-filter)</Badge>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        <nav className="flex flex-wrap gap-2">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={classNames(
+                "px-3 py-2 rounded-xl text-sm border transition",
+                tab === t.key ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-800 border-gray-200 hover:bg-gray-50"
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {tab === "import" && (
+          <Section title="Välj Britpart-subkategorier" subtitle="Endast subkategorier exponeras. Filtrering sker på ID i backend.">
+            <SubcategorySelector selected={selected} onChange={setSelected} />
+            <div className="h-4" />
+            <ImportPanel selected={selected} onImported={(s) => setImportStats(s)} />
+            {importStats && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Badge tone="success">Importerade: {importStats.imported}</Badge>
+                <Badge tone="neutral">Skapade: {importStats.created}</Badge>
+                <Badge tone="neutral">Uppdaterade: {importStats.updated}</Badge>
+              </div>
+            )}
+          </Section>
+        )}
+
+        {tab === "schedule" && (
+          <Section title="Schemalägg nattimport" subtitle="Välj körningstid och vilka subkategorier som ska importeras nattetid.">
+            <SchedulePanel selected={selected} />
+          </Section>
+        )}
+
+        {tab === "excel" && (
+          <Section title="Prisuppdatering via Excel" subtitle="Ladda upp en .xlsx-fil med kolumner: sku, regular_price, sale_price, stock_quantity, status.">
+            <ExcelPricePanel />
+          </Section>
+        )}
+
+        {tab === "categories" && (
+          <Section title="WooCommerce-kategorier (publicerade)" subtitle="För referens.">
+            <WooCategoriesPanel />
+          </Section>
+        )}
+
+        {tab === "logs" && (
+          <Section title="Loggar" subtitle="Senaste körningar och eventuella felmeddelanden.">
+            <LogsPanel />
+          </Section>
+        )}
+
+        {tab === "products" && (
+          <Section title="Produkter" subtitle="Sök, filtrera och massuppdatera produkter.">
+            <ProductsTab />
+          </Section>
+        )}
+
+        {tab === "advanced" && (
+          <>
+            <Section title="Prisfil via SAS/Blob" subtitle="Chunkad serverbearbetning av stora filer (SKU-matchning → pris/lager).">
+              <SASPriceImportPanel />
+            </Section>
+            <Section title="Snabbimport (1 produkt)" subtitle="Skapar/publicerar en enstaka produkt i WooCommerce.">
+              <QuickImportOne />
+            </Section>
+          </>
+        )}
+
+        <footer className="pt-4 text-center text-xs text-gray-500">
+          Björklin Motor AB • Organisationsnr 559210-3724 • Kometvägen 2, 755 94 Uppsala
+        </footer>
       </main>
     </div>
   );
 }
 
-/* =================================================================== */
-/*                          Flik 1 – Produkter                          */
-/* =================================================================== */
-
-function ProductsTab(): React.ReactElement {
-  // Filter
-  const [status, setStatus] = useState<string>("any");
-  const [search, setSearch] = useState<string>("");
-  const [category, setCategory] = useState<string>("");
-  const [orderby, setOrderby] = useState<"title" | "date" | "id" | "price">("title");
-  const [order, setOrder] = useState<"asc" | "desc">("asc");
-  const [perPage, setPerPage] = useState<number>(100);
-  const [page, setPage] = useState<number>(1);
-
-  // Data
-  const [loading, setLoading] = useState<boolean>(false);
-  const [err, setErr] = useState<string>("");
-  const [data, setData] = useState<ListResponse>({ items: [], total: 0, pages: 0, page: 1 });
-  const [selected, setSelected] = useState<number[]>([]);
-  const [cats, setCats] = useState<WCCategory[]>([]);
-  const ctrlRef = useRef<AbortController | null>(null);
-
-  const canPrev = page > 1;
-  const canNext = page < (data.pages || 1);
-  const items = data?.items ?? [];
-
-  async function load(
-    over?: Partial<{
-      page: number;
-      status: string;
-      search: string;
-      category: string;
-      orderby: string;
-      order: string;
-      per_page: number;
-    }>
-  ) {
-    const p = over?.page ?? page;
-    const st = over?.status ?? status;
-    const se = (over?.search ?? search).trim();
-    const cat = over?.category ?? category;
-    const ob = (over?.orderby ?? orderby) as string;
-    const od = (over?.order ?? order) as string;
-    const pp = over?.per_page ?? perPage;
-
-    setLoading(true);
-    setErr("");
-    ctrlRef.current?.abort();
-    const ctrl = new AbortController();
-    ctrlRef.current = ctrl;
-
-    try {
-      const q = new URLSearchParams({
-        page: String(p),
-        orderby: ob,
-        order: od,
-        per_page: String(pp),
-      });
-      if (st !== "any") q.set("status", st);
-      if (se) q.set("search", se);
-      if (cat) q.set("category", cat);
-
-      const res = await fetch(`/api/products-list?${q.toString()}`, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setData(normalizeList(json));
-      setSelected([]);
-    } catch (e: any) {
-      if (e?.name !== "AbortError") setErr(e?.message || "Något gick fel");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadCategories() {
-    try {
-      const res = await fetch("/api/wc-categories");
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setCats(normalizeCategories(json));
-    } catch (e: any) {
-      console.error(e);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, orderby, order, perPage]);
-
-  useEffect(() => {
-    loadCategories();
-  }, []);
-
-  function toggle(id: number) {
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  }
-  function toggleAllOnPage() {
-    setSelected((s) =>
-      s.length === items.length && items.length > 0 ? [] : items.map((p) => p.id)
-    );
-  }
-
-  async function bulkUpdate(payload: Partial<{ status: WCProduct["status"]; price: string; stock_quantity: number; categoryId: number }>) {
-    if (selected.length === 0 || loading) return;
-    setLoading(true);
-    setErr("");
-    try {
-      const res = await fetch("/api/products-update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selected, ...payload }),
-      });
-      const text = await res.text();
-      const j = text ? JSON.parse(text) : {};
-      if (!res.ok) throw new Error(j?.error || text || "Kunde inte uppdatera");
-      setSelected([]);
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Kunde inte uppdatera");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function bulkDelete() {
-    if (selected.length === 0 || loading) return;
-    if (!confirm(`Radera ${selected.length} produkt(er) permanent i WooCommerce?`)) return;
-
-    setLoading(true);
-    setErr("");
-    try {
-      const res = await fetch("/api/products-delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selected }),
-      });
-
-      const text = await res.text();
-      let payload: any = null;
-      if (text) {
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          payload = { raw: text };
-        }
-      }
-
-      if (!res.ok) {
-        const msg = payload?.error || text || `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-
-      setSelected([]);
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Kunde inte radera");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function askNewPrice() {
-    if (selected.length === 0) return;
-    const v = prompt("Nytt pris (SEK):", "");
-    if (!v) return;
-    const clean = v.replace(",", ".").trim();
-    if (!/^\d+(\.\d+)?$/.test(clean)) {
-      alert("Ogiltigt pris");
-      return;
-    }
-    bulkUpdate({ price: clean });
-  }
-
-  function assignCategory() {
-    if (selected.length === 0) return;
-    const val = prompt("Sätt kategori-id (WooCommerce):", "");
-    const id = val ? Number(val) : 0;
-    if (!id) return;
-    bulkUpdate({ categoryId: id });
-  }
-
-  return (
-    <>
-      {/* Filters */}
-      <section className={`${brand.card} p-4 mb-6`}>
-        <div className="grid xl:grid-cols-12 gap-3 items-end">
-          <div className="xl:col-span-5">
-            <label className="block text-sm font-medium mb-1">Sök</label>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Namn eller SKU"
-              className="w-full rounded-lg border px-3 py-2"
-            />
-          </div>
-          <div className="xl:col-span-2">
-            <label className="block text-sm font-medium mb-1">Status</label>
-            <select
-              value={status}
-              onChange={(e) => {
-                setStatus(e.target.value);
-                setPage(1);
-              }}
-              className="w-full rounded-lg border px-3 py-2"
-            >
-              <option value="any">Alla</option>
-              <option value="publish">Publicerad</option>
-              <option value="draft">Utkast</option>
-              <option value="pending">Pending</option>
-              <option value="private">Privat</option>
-            </select>
-          </div>
-          <div className="xl:col-span-3">
-            <label className="block text-sm font-medium mb-1">Kategori</label>
-            <select
-              value={category}
-              onChange={(e) => {
-                setCategory(e.target.value);
-                setPage(1);
-              }}
-              className="w-full rounded-lg border px-3 py-2"
-            >
-              <option value="">Alla</option>
-              {cats.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name} · #{c.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="xl:col-span-2 flex gap-2">
-            <button
-              onClick={() => {
-                setPage(1);
-                load({ page: 1, search, category, orderby, order, per_page: perPage, status });
-              }}
-              className="px-4 py-2 rounded-lg ui-btn"
-              disabled={loading}
-            >
-              {loading ? "Hämtar…" : "Hämta produkter"}
-            </button>
-            <button
-              onClick={() => {
-                setSearch("");
-                setStatus("any");
-                setCategory("");
-                setPage(1);
-                load({ page: 1, search: "", status: "any", category: "" });
-              }}
-              className="px-4 py-2 rounded-lg ui-btn"
-              disabled={loading}
-            >
-              Rensa
-            </button>
-          </div>
-
-          <div className="xl:col-span-12 grid grid-cols-2 md:grid-cols-5 gap-3 pt-2">
-            <div className="flex items-center gap-2">
-              <span className="text-sm opacity-70">Sortera:</span>
-              <select
-                value={orderby}
-                onChange={(e) => setOrderby(e.target.value as any)}
-                className="rounded-lg border px-2 py-1"
-              >
-                <option value="title">Titel</option>
-                <option value="price">Pris</option>
-                <option value="date">Datum</option>
-                <option value="id">ID</option>
-              </select>
-              <select
-                value={order}
-                onChange={(e) => setOrder(e.target.value as any)}
-                className="rounded-lg border px-2 py-1"
-              >
-                <option value="asc">Stigande</option>
-                <option value="desc">Fallande</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm opacity-70">Per sida:</span>
-              <select
-                value={perPage}
-                onChange={(e) => {
-                  setPerPage(Number(e.target.value));
-                  setPage(1);
-                }}
-                className="rounded-lg border px-2 py-1"
-              >
-                {[25, 50, 100].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {err && <div className="col-span-full text-red-600 text-sm break-all">{err}</div>}
-          </div>
-        </div>
-      </section>
-
-      {/* Bulk actions */}
-      <section className={`${brand.card} p-4 mb-4 flex flex-wrap items-center gap-3`}>
-        <button
-          disabled={selected.length === 0 || loading}
-          onClick={() => bulkUpdate({ status: "publish" })}
-          className="px-4 py-2 rounded-lg ui-btn"
-        >
-          Publicera
-        </button>
-        <button
-          disabled={selected.length === 0 || loading}
-          onClick={() => bulkUpdate({ status: "draft" })}
-          className="px-4 py-2 rounded-lg ui-btn"
-        >
-          Avpublicera
-        </button>
-        <button
-          disabled={selected.length === 0 || loading}
-          onClick={askNewPrice}
-          className="px-4 py-2 rounded-lg ui-btn"
-        >
-          Nytt pris (SEK)
-        </button>
-        <button
-          disabled={selected.length === 0 || loading}
-          onClick={assignCategory}
-          className="px-4 py-2 rounded-lg ui-btn"
-        >
-          Sätt kategori
-        </button>
-        <button
-          disabled={selected.length === 0 || loading}
-          onClick={bulkDelete}
-          className="ml-auto px-4 py-2 rounded-lg ui-btn ui-btn--danger"
-        >
-          Radera
-        </button>
-        <span className="text-sm opacity-70">Valda: {selected.length}</span>
-      </section>
-
-      {/* Tabell */}
-      <section className={`${brand.card} overflow-auto`}>
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-100">
-            <tr className="[&>th]:p-3 [&>th]:text-left">
-              <th className="w-10">
-                <input
-                  type="checkbox"
-                  onChange={toggleAllOnPage}
-                  checked={items.length > 0 && selected.length === items.length}
-                />
-              </th>
-              <th>Produkt</th>
-              <th>SKU</th>
-              <th>Pris</th>
-              <th>Lager</th>
-              <th>Status</th>
-              <th>Kategori</th>
-              <th>ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={8} className="p-6 text-center">
-                  Laddar…
-                </td>
-              </tr>
-            )}
-            {!loading && items.length === 0 && (
-              <tr>
-                <td colSpan={8} className="p-6 text-center">
-                  Inga produkter
-                </td>
-              </tr>
-            )}
-            {!loading &&
-              items.map((p) => (
-                <tr key={p.id} className="border-t align-middle">
-                  <td className="p-3">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(p.id)}
-                      onChange={() => toggle(p.id)}
-                    />
-                  </td>
-                  <td className="p-3 min-w-[320px]">
-                    <div className="flex items-center gap-3">
-                      {p.images?.[0]?.src && (
-                        <img
-                          src={p.images[0].src}
-                          alt=""
-                          className="w-10 h-10 object-cover rounded-lg border"
-                        />
-                      )}
-                      <span className="font-medium leading-tight">
-                        {p.name || "(namnlös)"}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="p-3 font-mono">{p.sku || "—"}</td>
-                  <td className="p-3">{p.regular_price ?? "—"}</td>
-                  <td className="p-3">
-                    {p.stock_quantity ?? "—"}{" "}
-                    {p.stock_status && (
-                      <span className="ml-1 opacity-60">({p.stock_status})</span>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    <span className={brand.chip}>{p.status}</span>
-                  </td>
-                  <td className="p-3">
-                    {p.categories?.[0]?.id ? `#${p.categories[0].id}` : "—"}
-                  </td>
-                  <td className="p-3">{p.id}</td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </section>
-
-      {/* Pagination */}
-      <section className="mt-4 flex items-center justify-between">
-        <div className="text-sm opacity-70">
-          Totalt: {data.total} · Sidor: {data.pages}
-        </div>
-        <div className="flex gap-2">
-          <button
-            disabled={!canPrev || loading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50"
-          >
-            Föregående
-          </button>
-          <span className="px-2 py-2">{data.page}</span>
-          <button
-            disabled={!canNext || loading}
-            onClick={() => setPage((p) => p + 1)}
-            className="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50"
-          >
-            Nästa
-          </button>
-        </div>
-      </section>
-    </>
-  );
-}
-
-/* =================================================================== */
-/*                         Flik 2 – Import & synk                       */
-/* =================================================================== */
-
-function ImportTab(): React.ReactElement {
-  const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<string[]>([]);
-  const [pub, setPub] = useState(true);
-
-  // Prisberäkning
-  const [fx, setFx] = useState<number>(13.5);
-  const [markup, setMarkup] = useState<number>(25);
-  const [roundMode, setRoundMode] = useState<RoundModeUI>("nearest");
-  const [roundStep, setRoundStep] = useState<number>(1);
-  const [dry, setDry] = useState<boolean>(true);
-
-  // Britpart underkategorier
-  type BPSub = { id: number; name: string; hasChildren?: boolean };
-  const [bpSubs, setBpSubs] = useState<BPSub[]>([]);
-  const [selectedSubs, setSelectedSubs] = useState<number[]>([]);
-
-  // Chunk & batch (per din önskan: 500 rader per körning)
-  const CHUNK_ROWS = 500;    // rader per serverkörning
-  const INNER_BATCH = 250;   // rader per intern batch på servern
-  const PAUSE_MS = 600;      // liten paus mellan körningar
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/britpart-subcategories?parentId=3");
-        if (!res.ok) {
-          const txt = await res.text().catch(() => "");
-          throw new Error(txt || `HTTP ${res.status}`);
-        }
-        const j = await res.json();
-        const rows: BPSub[] = Array.isArray(j?.children)
-          ? j.children.map((c: any) => ({
-              id: Number(c.id),
-              name: String(c.title ?? c.name ?? c.id),
-              hasChildren: !!c.hasChildren,
-            }))
-          : [];
-        setBpSubs(rows);
-      } catch (e: any) {
-        addLog(`Fel att hämta underkategorier: ${e?.message || String(e)}`);
-      }
-    })();
-  }, []);
-
-  function addLog(s: string) {
-    const stamp = new Date().toLocaleString();
-    setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 500));
-  }
-
-  async function safeJson(res: Response): Promise<any> {
-    const t = await res.text();
-    try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
-  }
-
-  /** Prisfil: SAS -> PUT -> kör servern i chunkar om 500 rader tills klart */
-  async function runChunkedPriceImport(
-    file: File,
-    opts: {
-      fx: number; markupPct: number; roundModeUI: RoundModeUI; roundStep: number;
-      publish: boolean; dryRun: boolean;
-    },
-    addLogFn: (s: string) => void
-  ): Promise<void> {
-    // Validering (hantera svensk decimal)
-    const fxNum = parseNum(String(opts.fx));
-    const markupNum = parseNum(String(opts.markupPct), 0);
-    if (!Number.isFinite(fxNum) || fxNum <= 0) {
-      addLogFn("Fel: Ogiltig valutakurs. Ange t.ex. 13,5 eller 13.5");
-      return;
-    }
-    if (!Number.isFinite(markupNum) || markupNum < 0) {
-      addLogFn("Fel: Ogiltigt påslag (%)");
-      return;
-    }
-
-    const roundModeApi =
-      opts.roundModeUI === "nearest" ? "near" :
-      opts.roundModeUI === "up"      ? "up"   :
-      opts.roundModeUI === "down"    ? "down" : "near";
-    const stepApi = opts.roundModeUI === "none" ? 0 : Number(opts.roundStep || 1);
-
-    // 1) Hämta SAS
-    addLogFn("Begär SAS-URL…");
-    const sasRes = await fetch("/api/price-upload-sas", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name }),
-    });
-    const sasJson = await safeJson(sasRes);
-    if (!sasRes.ok || !sasJson?.ok) {
-      throw new Error(`SAS-fel (${sasRes.status}): ${sasJson?.error || sasJson?.raw || "unknown"}`);
-    }
-    const { sasUrl, container, blobName } = sasJson as { sasUrl: string; container: string; blobName: string };
-    addLogFn("SAS mottagen.");
-
-    // 2) PUT -> Blob
-    addLogFn("Laddar upp filen till Blob Storage…");
-    const headers: Record<string, string> = { "x-ms-blob-type": "BlockBlob" };
-    headers["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
-    const put = await fetch(sasUrl, { method: "PUT", headers, body: file });
-    if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 300)}`);
-    addLogFn("Uppladdning klar.");
-
-    // 3) Kör servern i delkörningar
-    let offset = 0;
-    let part = 1;
-    let grand = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
-
-    while (true) {
-      addLogFn(
-        `Startar server-bearbetning (del ${part})… ` +
-        `fx=${fxNum}, markup=${markupNum}, step=${stepApi}, round=${roundModeApi}, offset=${offset}, limit=${CHUNK_ROWS}`
-      );
-
-      const body = {
-        container,
-        blobName,
-        fx: fxNum,
-        markupPct: markupNum,
-        roundMode: roundModeApi,
-        step: stepApi,
-        publish: !!opts.publish,
-        dryRun: !!opts.dryRun,
-        batchSize: INNER_BATCH,
-        offset,
-        limitRows: CHUNK_ROWS,
-      };
-
-      const procRes = await fetch("/api/price-upload-from-blob", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const out = await safeJson(procRes);
-      if (!procRes.ok || !out?.ok) {
-        throw new Error(
-          (out?.error || `Bearbetning misslyckades (${procRes.status})`) +
-          (out?.details ? ` ${JSON.stringify(out.details)}` : "") +
-          (out?.raw ? ` – ${String(out.raw).slice(0, 200)}` : "")
-        );
-      }
-
-      grand.updated  += Number(out.updated || 0);
-      grand.skipped  += Number(out.skipped || 0);
-      grand.notFound += Number(out.notFound || 0);
-      grand.badRows  += Number(out.badRows || 0);
-      grand.total     = Number(out.total || grand.total);
-
-      addLogFn(
-        `Del ${part} klar: rader ${out.range?.offset}–${(out.range?.end ?? 0) - 1}, ` +
-        `updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`
-      );
-
-      const next = out.nextOffset as number | null;
-      if (!next || next >= out.total) break;
-      offset = next;
-      part++;
-
-      // Liten paus för att låta WP/hosten andas
-      await new Promise((r) => setTimeout(r, PAUSE_MS));
-    }
-
-    addLogFn(
-      `KLART: total=${grand.total}, updated=${grand.updated}, skipped=${grand.skipped}, ` +
-      `notFound=${grand.notFound}, bad=${grand.badRows}`
-    );
-  }
-
-  // ---- Prisfil via Blob/SAS
-  async function handlePriceUpload(file: File) {
-    try {
-      setBusy(true);
-      addLog(`Vald fil: ${file.name}`);
-      await runChunkedPriceImport(
-        file,
-        {
-          fx,
-          markupPct: markup,
-          roundModeUI: roundMode, // "nearest" | "up" | "down" | "none"
-          roundStep,
-          publish: pub,
-          dryRun: dry,
-        },
-        addLog
-      );
-    } catch (e: any) {
-      addLog(`Fel: ${e?.message || String(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // ---- Britpart dry-run / import
-  function ensureIds(): number[] {
-    const ids = selectedSubs.map((n) => Number(n)).filter(Number.isFinite);
-    if (!ids.length) addLog("Välj minst en underkategori.");
-    return ids;
-  }
-
-  async function postJson<T>(url: string, body: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
-    if (!res.ok) throw new Error(json?.error || text || `HTTP ${res.status}`);
-    return json as T;
-  }
-
-  async function handleDryRun() {
-    const ids = ensureIds();
-    if (!ids.length) return;
-
-    try {
-      setBusy(true);
-      addLog(`Dry-run: ${ids.join(", ")}`);
-      const j = await postJson<any>("/api/import-dry-run", { categoryIds: ids });
-
-      const create = j?.summary?.create ?? j?.create ?? 0;
-      const update = j?.summary?.update ?? j?.update ?? 0;
-      const skip   = j?.summary?.skip   ?? j?.skip   ?? 0;
-      const total  = j?.summary?.total  ?? j?.total  ?? create + update + skip;
-
-      addLog(`Dry-run OK – total:${total}, skapa:${create}, uppdatera:${update}, hoppa över:${skip}`);
-      if (Array.isArray(j?.sample) && j.sample.length) {
-        const peek = j.sample.slice(0, 5).map((x: any) => x?.sku || x?.id || "?").join(", ");
-        addLog(`Exempel: ${peek}${j.sample.length > 5 ? " …" : ""}`);
-      }
-    } catch (e: any) {
-      addLog(`Fel i dry-run: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleImport() {
-    const ids = ensureIds();
-    if (!ids.length) return;
-
-    try {
-      setBusy(true);
-      addLog(`Kör import: ${ids.join(", ")}`);
-      const j = await postJson<any>("/api/import-run", { categoryIds: ids, publish: true });
-
-      const created = j?.created ?? j?.create ?? 0;
-      const updated = j?.updated ?? j?.update ?? 0;
-      const skipped = j?.skipped ?? j?.skip ?? 0;
-      const total   = j?.total ?? created + updated + skipped;
-      addLog(`Import OK – total:${total}, created:${created}, updated:${updated}, skipped:${skipped}`);
-      if (j?.jobId) addLog(`Jobb-id: ${j.jobId}`);
-    } catch (e: any) {
-      addLog(`Fel i import: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // ---- Snabbimport (1 produkt)
-  const [sku, setSku] = useState("");
-  const [pname, setPname] = useState("");
-  const [pprice, setPprice] = useState("");
-  const [pstock, setPstock] = useState<number | "">("");
-  const [pcat, setPcat] = useState<number | "">("");
-  const [pstatus, setPstatus] = useState<"publish" | "draft">("publish");
-  const [pimg, setPimg] = useState("");
-
-  async function handleImportOne() {
-    try {
-      setBusy(true);
-      addLog(`Importerar produkt: ${sku}`);
-      const res = await fetch("/api/import-one", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sku,
-          name: pname || undefined,
-          price: pprice || undefined,
-          stock: pstock === "" ? undefined : Number(pstock),
-          categoryId: pcat === "" ? undefined : Number(pcat),
-          status: pstatus,
-          image: pimg || undefined,
-        }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || "Fel vid import");
-      addLog(`OK: #${j.id} (${j.status})`);
-    } catch (e: any) {
-      addLog(`Fel: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="grid lg:grid-cols-3 gap-6">
-      {/* A: Prisfil */}
-      <section className={`${brand.card} p-5`}>
-        <h2 className="text-lg font-semibold mb-1">Prisfil (Excel/CSV) → WooCommerce</h2>
-        <p className="text-sm opacity-70 mb-3">
-          Matchar på <b>SKU</b>. Räknar pris = GBP × valutakurs × (1 + påslag%) och avrundar.
-        </p>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-          <div>
-            <label className="text-xs opacity-70">Valutakurs (GBP→SEK)</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              className="w-full rounded-lg border px-3 py-2"
-              value={String(fx)}
-              onChange={(e) => setFx(parseNum(e.target.value, fx))}
-            />
-          </div>
-          <div>
-            <label className="text-xs opacity-70">Påslag (%)</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              className="w-full rounded-lg border px-3 py-2"
-              value={String(markup)}
-              onChange={(e) => setMarkup(parseNum(e.target.value, markup))}
-            />
-          </div>
-          <div>
-            <label className="text-xs opacity-70">Avrundning</label>
-            <select
-              className="w-full rounded-lg border px-3 py-2"
-              value={roundMode}
-              onChange={(e) => setRoundMode(e.target.value as RoundModeUI)}
-            >
-              <option value="nearest">Närmaste</option>
-              <option value="up">Uppåt</option>
-              <option value="down">Nedåt</option>
-              <option value="none">Ingen</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-xs opacity-70">Steg (SEK)</label>
-            <select
-              className="w-full rounded-lg border px-3 py-2"
-              value={roundStep}
-              onChange={(e) => setRoundStep(Number(e.target.value))}
-            >
-              <option value={1}>1</option>
-              <option value={5}>5</option>
-              <option value={10}>10</option>
-            </select>
-          </div>
-        </div>
-
-        <label className="block rounded-lg border px-4 py-6 text-center cursor-pointer bg-white hover:bg-slate-50 font-semibold">
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePriceUpload(e.target.files[0])}
-          />
-        {busy ? "Bearbetar…" : "Välj fil…"}
-        </label>
-
-        <div className="mt-3 flex items-center gap-4 text-sm">
-          <label className="flex items-center gap-2">
-            <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} />
-            Publicera direkt (annars draft)
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" className="accent-amber-600" checked={dry} onChange={() => setDry(!dry)} />
-            Dry-run (visa bara vad som skulle ändras)
-          </label>
-          <span className="ml-auto text-xs opacity-60">Kör automatiskt {CHUNK_ROWS} rader/körning</span>
-        </div>
-      </section>
-
-      {/* B: Snabbimport (1 produkt) */}
-      <section className={`${brand.card} p-5`}>
-        <h2 className="text-lg font-semibold mb-1">Britpart snabbimport (1 produkt)</h2>
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            value={sku}
-            onChange={(e) => setSku(e.target.value)}
-            placeholder="SKU (obligatorisk)"
-            className="rounded-lg border px-3 py-2 col-span-2"
-          />
-          <input value={pname} onChange={(e) => setPname(e.target.value)} placeholder="Namn" className="rounded-lg border px-3 py-2 col-span-2" />
-          <input value={pprice} onChange={(e) => setPprice(e.target.value)} placeholder="Pris (SEK)" className="rounded-lg border px-3 py-2" />
-          <input value={pstock as any} onChange={(e) => setPstock(e.target.value ? Number(e.target.value) : "")} placeholder="Lager" className="rounded-lg border px-3 py-2" />
-          <input value={pcat as any} onChange={(e) => setPcat(e.target.value ? Number(e.target.value) : "")} placeholder="Kategori ID" className="rounded-lg border px-3 py-2" />
-          <select value={pstatus} onChange={(e) => setPstatus(e.target.value as any)} className="rounded-lg border px-3 py-2">
-            <option value="publish">Publicera</option>
-            <option value="draft">Utkast</option>
-          </select>
-          <input value={pimg} onChange={(e) => setPimg(e.target.value)} placeholder="Bild-URL (valfritt)" className="rounded-lg border px-3 py-2 col-span-2" />
-        </div>
-        <button
-          disabled={!sku || busy}
-          onClick={handleImportOne}
-          className="mt-3 px-4 py-2 rounded-lg border bg-white hover:bg-slate-50 font-semibold disabled:opacity-50"
-        >
-          Importera nu
-        </button>
-      </section>
-
-      {/* C: Britpart underkategorier */}
-      <section className={`${brand.card} p-5`}>
-        <h2 className="text-lg font-semibold mb-1">Britpart underkategorier</h2>
-        <p className="text-sm opacity-70 mb-3">Välj en eller flera och kör dry-run eller import.</p>
-        <div className="h-48 overflow-auto rounded-lg border p-2 bg-white">
-          {bpSubs.map((s) => (
-            <label key={s.id} className="flex items-center gap-2 py-1">
-              <input
-                type="checkbox"
-                className="accent-amber-600"
-                checked={selectedSubs.includes(s.id)}
-                onChange={() =>
-                  setSelectedSubs((prev) =>
-                    prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]
-                  )
-                }
-              />
-              <span className="truncate">{s.name}</span>
-              <span className="ml-auto text-xs opacity-60">#{s.id}</span>
-            </label>
-          ))}
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          <button className="px-4 py-2 rounded-lg ui-btn" disabled={!selectedSubs.length || busy} onClick={handleDryRun}>
-            Dry-run
-          </button>
-          <button className="px-4 py-2 rounded-lg ui-btn" disabled={!selectedSubs.length || busy} onClick={handleImport}>
-            Kör import
-          </button>
-        </div>
-      </section>
-
-      {/* D: Logg */}
-      <section className="lg:col-span-3 bg-white rounded-2xl shadow-sm border p-5">
-        <h2 className="text-lg font-semibold mb-2">Logg</h2>
-        <div className="h-64 overflow-auto rounded-lg border bg-slate-50 p-3 text-sm font-mono leading-relaxed">
-          {log.length === 0 ? (
-            <div className="text-slate-400">Inga händelser ännu.</div>
-          ) : (
-            <ul className="space-y-1">{log.map((l, i) => <li key={i}>{l}</li>)}</ul>
-          )}
-        </div>
-      </section>
-    </div>
-  );
+/* --------------------------------- Utils --------------------------------- */
+function clampInt(v: string, min: number, max: number) {
+  const n = Math.floor(Number(v));
+  if (Number.isNaN(n)) return min;
+  return Math.min(max, Math.max(min, n));
 }
