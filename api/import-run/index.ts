@@ -1,6 +1,7 @@
+// api/import-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartGetByCategories, BritpartImportItem } from "../shared/britpart";
-import { wcFindProductBySku, wcCreateProduct, wcUpdateProduct } from "../shared/wc";
+import { britpartGetItemsForCategories, BritpartImportItem } from "../shared/britpart";
+import { wcFindProductIdBySku, wcFetch } from "../shared/wc";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -10,41 +11,86 @@ const CORS = {
 
 type RunBody = {
   categoryIds: number[];
-  publish?: boolean;          // publicera direkt
-  defaultStock?: number;      // t.ex. 100
-  wooCategoryId?: number;     // woo-kategori-id att sätta på alla
+  publish?: boolean;
+  defaultStock?: number;
+  wooCategoryId?: number;
 };
 
-function pickImageUrls(it: BritpartImportItem): string[] {
-  // Försök tolka olika fält som kan förekomma
-  const candidates = [
-    (it as any).imageUrl,
-    (it as any).image_url,
-    (it as any).image,
-    (it as any).img,
-    (it as any).thumbnail,
-  ];
-  const urls: string[] = [];
-  for (const c of candidates) {
-    if (!c) continue;
-    if (Array.isArray(c)) {
-      for (const x of c) if (typeof x === "string" && x.startsWith("http")) urls.push(x);
-    } else if (typeof c === "string" && c.startsWith("http")) {
-      urls.push(c);
-    }
-  }
-  return Array.from(new Set(urls));
+/* ------------------------ Woo wrappers ------------------------ */
+// Skicka JSON-kropp via wcFetch (som redan hanterar auth & bas-URL)
+async function wcCreateProduct(payload: any): Promise<Response> {
+  // Behöver din wcFetch path med eller utan ledande "/"?
+  // Om du får 404, ändra till "products" istället för "/products".
+  return wcFetch("/products", { method: "POST", body: JSON.stringify(payload) });
+}
+async function wcUpdateProduct(id: number, payload: any): Promise<Response> {
+  return wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
 }
 
-function pickPriceSek(it: BritpartImportItem): number | undefined {
-  const cand = [(it as any).priceSek, (it as any).priceSEK, (it as any).price_sek, (it as any).price];
-  for (const c of cand) {
-    const n = Number(c);
-    if (Number.isFinite(n) && n >= 0) return n;
+/* ------------------------ Normaliserare för fält ------------------------ */
+function pickSku(it: any): string | undefined {
+  const cands = [it?.sku, it?.SKU, it?.partNumber, it?.part_number, it?.partNo, it?.part_code, it?.partCode, it?.code];
+  for (const c of cands) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+    if (typeof c === "number" && Number.isFinite(c)) return String(c);
+  }
+  return undefined;
+}
+function pickName(it: any): string | undefined {
+  const cands = [it?.name, it?.title, it?.productName, it?.product_name];
+  for (const c of cands) if (typeof c === "string" && c.trim()) return c.trim();
+  return undefined;
+}
+function pickDescription(it: any): string {
+  const cands = [
+    it?.descriptionHtml, it?.longDescription, it?.long_description,
+    it?.description, it?.desc, it?.shortDescription, it?.short_description
+  ];
+  for (const c of cands) if (typeof c === "string" && c.trim()) return c;
+  return "";
+}
+function extractUrls(x: any): string[] {
+  const urls: string[] = [];
+  const pushIf = (u: any) => { if (typeof u === "string" && /^https?:\/\//i.test(u)) urls.push(u); };
+  if (!x) return urls;
+  if (typeof x === "string") pushIf(x);
+  else if (Array.isArray(x)) {
+    for (const y of x) {
+      if (typeof y === "string") pushIf(y);
+      else if (y && typeof y === "object") { pushIf(y.url); pushIf(y.src); pushIf(y.href); }
+    }
+  } else if (typeof x === "object") { pushIf(x.url); pushIf(x.src); pushIf(x.href); }
+  return urls;
+}
+function pickImageUrls(it: any): string[] {
+  const cands = [
+    it.imageUrls, it.image_urls, it.images, it.gallery, it.assets, it.media,
+    it.imageUrl, it.image_url, it.image, it.img, it.thumbnail
+  ];
+  const set = new Set<string>();
+  for (const c of cands) for (const u of extractUrls(c)) set.add(u);
+  return Array.from(set);
+}
+function parsePriceToNumber(raw: any): number | undefined {
+  if (raw == null) return undefined;
+  let s = String(raw).trim();
+  s = s.replace(/[^\d,.\-]/g, "");
+  if (s.includes(",") && s.includes(".")) s = s.replace(/,/g, "");
+  else if (s.includes(",") && !s.includes(".")) s = s.replace(",", ".");
+  const n = Number(s);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return undefined;
+}
+function pickPriceSek(it: any): number | undefined {
+  const cands = [it.priceSEK, it.priceSek, it.price_sek, it.price, it.unitPrice, it.unit_price];
+  for (const c of cands) {
+    const n = parsePriceToNumber(c);
+    if (Number.isFinite(n)) return n;
   }
   return undefined;
 }
 
+/* ------------------------------- Endpoint ------------------------------- */
 app.http("import-run", {
   route: "import-run",
   methods: ["POST", "OPTIONS", "GET"],
@@ -61,37 +107,41 @@ app.http("import-run", {
       const defaultStock = Number(body.defaultStock ?? 100);
       const wooCategoryId = body.wooCategoryId ? Number(body.wooCategoryId) : undefined;
 
-      const items: BritpartImportItem[] = await britpartGetByCategories(body.categoryIds);
+      // Hämta fulla produktobjekt från Britpart (inte bara koder)
+      const items: BritpartImportItem[] = await britpartGetItemsForCategories(body.categoryIds);
 
       let created = 0, updated = 0, skipped = 0;
       const errors: any[] = [];
       const sample: any[] = [];
 
-      for (const it of items) {
-        const sku = it?.sku?.trim();
+      for (const raw of items) {
+        const sku = pickSku(raw);
         if (!sku) { skipped++; continue; }
 
         try {
-          const existing = await wcFindProductBySku(sku);
+          // *** Viktigt: använd wcFindProductIdBySku (detta finns i din wc.ts) ***
+          const foundId = await wcFindProductIdBySku(sku).catch(() => null);
+          const existingId = foundId != null ? Number(foundId) : null;
 
-          const images = pickImageUrls(it).map((src) => ({ src }));
-          const priceSek = pickPriceSek(it);
+          const imagesArr = pickImageUrls(raw).map((src) => ({ src }));
+          const priceSek = pickPriceSek(raw);
+          const name = pickName(raw) || sku;
+          const description = pickDescription(raw);
 
           const basePayload: any = {
-            name: it?.name || sku,
+            name,
             sku,
-            description: (it as any)?.description ?? "",
+            description,
             manage_stock: true,
             stock_status: "instock",
             stock_quantity: defaultStock,
           };
-
           if (wooCategoryId) basePayload.categories = [{ id: wooCategoryId }];
-          if (images.length) basePayload.images = images;
+          if (imagesArr.length) basePayload.images = imagesArr;
           if (Number.isFinite(priceSek)) basePayload.regular_price = String(priceSek);
           if (publish) basePayload.status = "publish";
 
-          if (!existing) {
+          if (!existingId) {
             const res = await wcCreateProduct(basePayload);
             if (!res.ok) {
               const txt = await res.text();
@@ -99,9 +149,8 @@ app.http("import-run", {
               continue;
             }
             created++;
-            if (sample.length < 5) sample.push({ action: "created", sku });
+            if (sample.length < 5) sample.push({ action: "created", sku, preview: basePayload });
           } else {
-            // Vid update: skicka endast fält vi vill uppdatera (särskilt images/categories/pris)
             const updatePayload: any = {
               name: basePayload.name,
               description: basePayload.description,
@@ -110,21 +159,21 @@ app.http("import-run", {
               stock_quantity: defaultStock,
             };
             if (wooCategoryId) updatePayload.categories = basePayload.categories;
-            if (images.length) updatePayload.images = images;
+            if (imagesArr.length) updatePayload.images = imagesArr;
             if (Number.isFinite(priceSek)) updatePayload.regular_price = basePayload.regular_price;
             if (publish) updatePayload.status = "publish";
 
-            const res = await wcUpdateProduct(existing.id, updatePayload);
+            const res = await wcUpdateProduct(existingId, updatePayload);
             if (!res.ok) {
               const txt = await res.text();
-              errors.push({ sku, id: existing.id, error: txt.slice(0, 400) });
+              errors.push({ sku, id: existingId, error: txt.slice(0, 400) });
               continue;
             }
             updated++;
-            if (sample.length < 5) sample.push({ action: "updated", sku, id: existing.id });
+            if (sample.length < 5) sample.push({ action: "updated", sku, id: existingId, preview: updatePayload });
           }
         } catch (err: any) {
-          errors.push({ sku: it?.sku, error: err?.message || String(err) });
+          errors.push({ sku: raw?.sku, error: err?.message || String(err) });
         }
       }
 

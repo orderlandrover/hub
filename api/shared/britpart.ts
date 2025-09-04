@@ -1,31 +1,22 @@
 // api/shared/britpart.ts
 import { env } from "./env";
 
-/**
- * Bas-URL och token. BRITPART_BASE kan t.ex. vara "https://www.britpart.com"
- * Vi trimmar trailing slash för att undvika dubbel-/
- */
+/** --------------------------------------------------------------- */
+/** Bas / tokens                                                     */
+/** --------------------------------------------------------------- */
 const BRITPART_BASE = env.BRITPART_BASE.replace(/\/$/, "");
 const BRITPART_TOKEN = env.BRITPART_TOKEN;
 
-/* ------------------------------------------------------------------ */
-/* Typer                                                               */
-/* ------------------------------------------------------------------ */
+/** --------------------------------------------------------------- */
+/** Typer (befintligt + utökning)                                    */
+/** --------------------------------------------------------------- */
 
-/**
- * Typen vi använder internt efter normalisering.
- * OBS: Britpart kan returnera olika former (ibland under "items"),
- * därför normaliserar vi alltid via normalizeCategory().
- */
 export type BritpartCategoryResponse = {
   id: number;
   title?: string;
   url?: string;
-  /** Finns på vissa (blad)kategorier */
   partCodes?: string[];
-  /** ID:n till barnkategorier (vanligast på toppnivå/föräldrar) */
   subcategoryIds?: number[];
-  /** Ibland får vi inbäddade underkategorier direkt i samma svar */
   subcategories?: Array<{
     id: number;
     title?: string;
@@ -34,14 +25,28 @@ export type BritpartCategoryResponse = {
   }>;
 };
 
-/* ------------------------------------------------------------------ */
-/* helpers                                                            */
-/* ------------------------------------------------------------------ */
+/** Minimal struktur för import, men nu tillåter vi fler fält */
+export type BritpartImportItem = {
+  sku: string;               // Britpart partCode
+  name?: string;
+  description?: string;      // HTML tillåten
+  price?: number | string;   // råpris (oklart valuta)
+  priceSEK?: number | string;
+  unitPrice?: number | string;
+  imageUrl?: string | string[]; // str eller lista
+  images?: Array<{ url?: string; src?: string; href?: string }>;
+  categoryId?: number;
+  // valfritt meta
+  currency?: string;
+  extra?: any;
+};
 
-/** liten delay */
+/** --------------------------------------------------------------- */
+/** helpers                                                          */
+/** --------------------------------------------------------------- */
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** säkert JSON‑parse med förbättrat felmeddelande */
 async function safeJson<T = any>(res: Response): Promise<T> {
   const txt = await res.text();
   try {
@@ -51,11 +56,6 @@ async function safeJson<T = any>(res: Response): Promise<T> {
   }
 }
 
-/**
- * Normalisera Britpart-svar:
- * - Vissa endpoints svarar som { items: {...} }, andra som {...}
- * - Säkrar att id/ids är number
- */
 function normalizeCategory(raw: any): BritpartCategoryResponse {
   const obj = raw?.items ?? raw ?? {};
 
@@ -77,28 +77,21 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
     url: obj?.url,
     partCodes: Array.isArray(obj?.partCodes) ? obj.partCodes : undefined,
     subcategoryIds: Array.isArray(obj?.subcategoryIds)
-      ? obj.subcategoryIds.map((n: any) => Number(n))
+      ? obj?.subcategoryIds.map((n: any) => Number(n))
       : undefined,
     subcategories: normSubcats,
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Fetch mot Britpart (med backoff + bakåtkompatibel query-hantering)  */
-/* ------------------------------------------------------------------ */
+/** --------------------------------------------------------------- */
+/** Resilient fetch mot Britpart                                     */
+/** --------------------------------------------------------------- */
 
-/**
- * Försiktig fetch mot Britpart med retries/backoff på 5xx/429 + nätverksfel.
- * Bakåtkompatibel: om init innehåller "okända" fält (t.ex. page, code, modifiedSince, subcategoryId)
- * och method saknas/är GET → behandla dem som query-parametrar.
- */
 async function britpartFetchRaw(path: string, init?: RequestInit | Record<string, any>) {
-  // Bas-URL
   const base = path.startsWith("http")
     ? path
     : `${BRITPART_BASE}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
 
-  // Dela upp init i "äkta" RequestInit och potentiella query-parametrar
   const knownInit: RequestInit = {};
   const maybeParams: Record<string, any> = {};
 
@@ -109,7 +102,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit | Record<string
     ];
     for (const [k, v] of Object.entries(init)) {
       if ((knownKeys as string[]).includes(k)) {
-        // @ts-expect-error: tillåt assignment här
+        // @ts-expect-error
         knownInit[k] = v as any;
       } else {
         maybeParams[k] = v;
@@ -117,23 +110,18 @@ async function britpartFetchRaw(path: string, init?: RequestInit | Record<string
     }
   }
 
-  // Om method saknas eller är GET och vi har "okända" fält → gör dem till query-parametrar
   let url = base;
   const method = (knownInit.method ?? "GET").toString().toUpperCase();
   if (method === "GET" && Object.keys(maybeParams).length > 0) {
     const usp = new URLSearchParams();
     for (const [k, v] of Object.entries(maybeParams)) {
-      if (v === undefined || v === null) continue;
-      if (Array.isArray(v)) {
-        v.forEach((vv) => usp.append(k, String(vv)));
-      } else {
-        usp.set(k, String(v));
-      }
+      if (v == null) continue;
+      if (Array.isArray(v)) v.forEach((vv) => usp.append(k, String(vv)));
+      else usp.set(k, String(v));
     }
     url += (url.includes("?") ? "&" : "?") + usp.toString();
   }
 
-  // Sätt headers inkl. Token
   const headers: Record<string, string> = {
     ...(knownInit.headers as Record<string, string> | undefined),
     "Content-Type": "application/json",
@@ -146,12 +134,10 @@ async function britpartFetchRaw(path: string, init?: RequestInit | Record<string
       const res = await fetch(url, { ...knownInit, headers });
       if (res.ok) return res;
 
-      // backoff på 5xx/429
       if (res.status >= 500 || res.status === 429) {
         await sleep(400 + attempt * 300);
         continue;
       }
-
       const body = await res.text();
       throw new Error(`Britpart ${res.status}: ${body}`);
     } catch (e: any) {
@@ -162,57 +148,30 @@ async function britpartFetchRaw(path: string, init?: RequestInit | Record<string
   throw lastErr ?? new Error("Britpart call failed");
 }
 
-/* ------------------------------------------------------------------ */
-/* publika bas-anrop                                                   */
-/* ------------------------------------------------------------------ */
-
-/** Hämta valfri kategori */
+/** Publika kategori-anrop (oförändrat) */
 export async function getCategory(id: number): Promise<BritpartCategoryResponse> {
   const res = await britpartFetchRaw(`/part/getcategories?id=${id}`);
   const json = await safeJson(res);
   return normalizeCategory(json);
 }
-
-/** Roten (id=3 "All Parts") för att få ut top-nivåns subkategorier till UI */
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
   const res = await britpartFetchRaw(`/part/getcategories?id=3`);
   const json = await safeJson(res);
   return normalizeCategory(json);
 }
-
-/**
- * Hämta endast DIREKTA barn (bra för UI‑listor där man klickar sig ner)
- * Returnerar en lista av normaliserade child‑noder.
- */
 export async function getDirectSubcategories(
   parentId: number
 ): Promise<BritpartCategoryResponse["subcategories"]> {
   const parent = await getCategory(parentId);
-  // Om svaret inte embed:ade barn, och vi bara fick subcategoryIds,
-  // kan man välja att hämta in dessa parallellt. Här håller vi oss snabba
-  // och returnerar det som fanns i svaret – UI kan sedan ropa getCategory(childId)
-  // vid expandering.
   return parent.subcategories ?? [];
 }
 
-/* ------------------------------------------------------------------ */
-/* rekursiv insamling av partCodes                                     */
-/* ------------------------------------------------------------------ */
+/** --------------------------------------------------------------- */
+/** Rekursiv insamling av partCodes (oförändrat)                      */
+/** --------------------------------------------------------------- */
 
-/** enkel cache så vi inte hämtar samma kategori om och om igen */
 const catCache = new Map<number, BritpartCategoryResponse>();
 
-/**
- * Hämtar alla partCodes för EN kategori, rekursivt.
- * Strategi:
- *  - Läs egna `partCodes` om de finns
- *  - Gå igenom inbäddade `subcategories`:
- *      * push:a deras `partCodes` (om finns)
- *      * REKURSA ALLTID på deras `id` (viktigt!)
- *      * (om en subcategory dessutom innehåller `subcategoryIds` i samma svar,
- *         följ även dem – ofarligt och ibland snabbare)
- *  - Gå igenom `subcategoryIds` på kategorin och rekursa
- */
 async function collectPartCodesFrom(
   catId: number,
   seen: Set<number>,
@@ -220,8 +179,6 @@ async function collectPartCodesFrom(
 ): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
-
-  // skydda oss mot orimligt djupa/länkade träd
   if (depth > 12) return [];
 
   let cat = catCache.get(catId);
@@ -231,24 +188,13 @@ async function collectPartCodesFrom(
   }
 
   const out: string[] = [];
+  if (Array.isArray(cat.partCodes) && cat.partCodes.length) out.push(...cat.partCodes);
 
-  // 1) egna koder
-  if (Array.isArray(cat.partCodes) && cat.partCodes.length) {
-    out.push(...cat.partCodes);
-  }
-
-  // 2) inbäddade subcategories i samma svar
   if (Array.isArray(cat.subcategories) && cat.subcategories.length) {
     for (const sc of cat.subcategories) {
-      if (Array.isArray(sc.partCodes) && sc.partCodes.length) {
-        out.push(...sc.partCodes);
-      }
-
-      // Viktigt: rekursa alltid på barnets id (kan sakna subcategoryIds i samma svar)
+      if (Array.isArray(sc.partCodes) && sc.partCodes.length) out.push(...sc.partCodes);
       const innerFromChild = await collectPartCodesFrom(Number(sc.id), seen, depth + 1);
       out.push(...innerFromChild);
-
-      // (valfritt men ofarligt): om svaret även innehåller en ID-lista, följ även den
       if (Array.isArray(sc.subcategoryIds) && sc.subcategoryIds.length) {
         for (const subId of sc.subcategoryIds) {
           const inner = await collectPartCodesFrom(Number(subId), seen, depth + 1);
@@ -258,62 +204,146 @@ async function collectPartCodesFrom(
     }
   }
 
-  // 3) endast ID-lista på denna nivå → gå vidare rekursivt
   if (Array.isArray(cat.subcategoryIds) && cat.subcategoryIds.length) {
     for (const subId of cat.subcategoryIds) {
       const inner = await collectPartCodesFrom(Number(subId), seen, depth + 1);
       out.push(...inner);
     }
   }
-
   return out;
 }
 
-/**
- * Publik funktion:
- *  - Tar en eller flera kategori‑ID:n (top eller mellan‑nivå)
- *  - Returnerar **unika** partCodes från alla underliggande blad
- */
 export async function britpartGetPartCodesForCategories(
   categoryIds: number[]
 ): Promise<string[]> {
   const seen = new Set<number>();
   const all: string[] = [];
-
   for (const id of categoryIds) {
     const codes = await collectPartCodesFrom(Number(id), seen, 0);
     all.push(...codes);
   }
-
-  // unika & filtrerade på rimlig sträng
-  return Array.from(
-    new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0))
-  );
+  return Array.from(new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0)));
 }
 
-/* ------------------------------------------------------------------ */
-/* Bakåtkompatibla exporter (för övriga Functions)                     */
-/* ------------------------------------------------------------------ */
-
-// Viktigt: exportera under namnet som dina andra endpoints använder
-export { britpartFetchRaw as britpartFetch };
-
-/** Minimal struktur för import-run m.fl. – kan byggas ut senare */
-export type BritpartImportItem = {
-  sku: string;           // Britpart partCode
-  name?: string;
-  description?: string;  // används av import-run
-  priceGBP?: number;
-  imageUrl?: string;
-  categoryId?: number;
-};
+/** --------------------------------------------------------------- */
+/** NYTT: Hämta produktdetaljer för partCodes                         */
+/** --------------------------------------------------------------- */
 
 /**
- * Bakåtkompatibel hjälpare:
- * - Tar kategori-ID:n och returnerar en lista med ImportItem där minst `sku` är satt.
- * - Använder vår rekursiva traversal under huven.
+ * Normalize ett “part” till vår importstruktur.
+ * Vi stödjer vanliga fältvarianter från Postman-proberna.
  */
-export async function britpartGetByCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
+function normalizePart(raw: any): BritpartImportItem | undefined {
+  if (!raw) return undefined;
+
+  const sku =
+    raw?.sku ?? raw?.SKU ?? raw?.partCode ?? raw?.part_code ?? raw?.code ?? raw?.partNumber ?? raw?.part_number;
+  if (!sku || (typeof sku === "string" && !sku.trim())) return undefined;
+
+  const name = raw?.name ?? raw?.title ?? raw?.productName ?? raw?.product_name ?? undefined;
+  const description =
+    raw?.descriptionHtml ?? raw?.longDescription ?? raw?.long_description ??
+    raw?.description ?? raw?.desc ?? raw?.shortDescription ?? raw?.short_description ?? undefined;
+
+  // Pris & valuta – vi sparar både råpris och ev. SEK
+  const currency = raw?.currency ?? raw?.Currency ?? raw?.priceCurrency ?? undefined;
+  const priceSEK = raw?.priceSEK ?? raw?.priceSek ?? raw?.price_sek ?? undefined;
+  const unitPrice = raw?.unitPrice ?? raw?.unit_price ?? raw?.price ?? undefined;
+
+  const images = raw?.images ?? raw?.gallery ?? raw?.assets ?? undefined;
+  const imageUrl = raw?.imageUrl ?? raw?.image_url ?? raw?.image ?? raw?.img ?? raw?.thumbnail ?? undefined;
+
+  return {
+    sku: String(sku).trim(),
+    name,
+    description,
+    price: unitPrice,
+    priceSEK,
+    unitPrice,
+    currency,
+    images,
+    imageUrl,
+    extra: raw,
+  };
+}
+
+/**
+ * Prova ett gäng rimliga endpoints/parametrar för 1 partCode.
+ * Vi har sett variation i Postman – därför testar vi i fallande prioritet.
+ */
+async function probePartDetails(partCode: string): Promise<any | undefined> {
+  const candidates: Array<{ path: string; params: Record<string, any> }> = [
+    { path: "/part/getpart",  params: { code: partCode } },
+    { path: "/part/getpart",  params: { partCode: partCode } },
+    { path: "/part/getparts", params: { codes: partCode } },           // single
+    { path: "/part/getparts", params: { partCodes: partCode } },
+    { path: "/part/get",      params: { code: partCode } },
+    { path: "/part/search",   params: { query: partCode } },
+  ];
+
+  for (const c of candidates) {
+    try {
+      const res = await britpartFetchRaw(c.path, c.params); // GET + query byggs automatiskt
+      const json = await safeJson<any>(res);
+
+      // Vanliga svar: {items:{...}} eller {items:[...] } eller {...}
+      const payload = json?.items ?? json;
+      if (!payload) continue;
+
+      if (Array.isArray(payload)) {
+        // Leta exakt match på partCode om vi fick en lista
+        const exact =
+          payload.find((p: any) =>
+            [p?.sku, p?.SKU, p?.partCode, p?.part_code, p?.code, p?.partNumber, p?.part_number]
+              .map((v) => String(v ?? "").trim())
+              .includes(String(partCode).trim())
+          ) ?? payload[0];
+        if (exact) return exact;
+      } else {
+        return payload;
+      }
+    } catch {
+      // prova nästa kandidat
+      await sleep(120);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Hämta produktdetaljer för många partCodes (låg samtidighet för att undvika 429).
+ */
+export async function britpartGetProductsByCodes(codes: string[], concurrency = 3): Promise<BritpartImportItem[]> {
+  const out: BritpartImportItem[] = [];
+  const q = [...new Set(codes.map((c) => String(c).trim()).filter(Boolean))];
+
+  let i = 0;
+  async function worker() {
+    while (i < q.length) {
+      const idx = i++;
+      const code = q[idx];
+      const raw = await probePartDetails(code);
+      const norm = normalizePart(raw ?? { code }); // fall back till bara SKU
+      if (norm) out.push(norm);
+      await sleep(60);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, q.length) }, worker));
+  return out;
+}
+
+/** Bekvämlighet: kategori-ID:n → fulla importobjekt */
+export async function britpartGetItemsForCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
   const codes = await britpartGetPartCodesForCategories(categoryIds);
-  return codes.map((sku) => ({ sku }));
+  if (!codes.length) return [];
+  return britpartGetProductsByCodes(codes);
+}
+
+/** Bakåtkompatibel export */
+export { britpartFetchRaw as britpartFetch };
+
+/** OBS: behåll gamla funktionen om något fortfarande kallar den */
+export async function britpartGetByCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
+  // Nu uppgraderad: returnera faktiska detaljer, inte endast {sku}
+  return britpartGetItemsForCategories(categoryIds);
 }
