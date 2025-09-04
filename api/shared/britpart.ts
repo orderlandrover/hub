@@ -347,3 +347,68 @@ export async function britpartGetByCategories(categoryIds: number[]): Promise<Br
   // Nu uppgraderad: returnera faktiska detaljer, inte endast {sku}
   return britpartGetItemsForCategories(categoryIds);
 }
+
+// --- Lägg detta längst NEDERST i api/shared/britpart.ts (före sista exporterna om du vill) ---
+
+/** Normalisera ett element från /part/getall till vår importstruktur */
+function normalizeGetAllItem(it: any, subcategoryId?: number): BritpartImportItem | undefined {
+  const sku = String(it?.code ?? "").trim();
+  if (!sku) return undefined;
+  const imageUrls = Array.isArray(it?.imageUrls) ? it.imageUrls.filter((u: any) => typeof u === "string" && /^https?:\/\//i.test(u)) : [];
+  return {
+    sku,
+    name: it?.title ?? undefined,
+    description: it?.subText ?? "",
+    imageUrl: imageUrls[0],
+    images: imageUrls.map((url: string) => ({ url })),
+    categoryId: subcategoryId,
+    // getall har oftast inte pris – vi håller oss till plug-in-beteendet (pris sätts i WC senare)
+  };
+}
+
+/**
+ * Hämta ALLA parts för EN subkategori via /part/getall, med paginering (1..n).
+ * Returnerar redan normaliserade importposter.
+ */
+export async function britpartGetAllBySubcategory(subcategoryId: number, pageSize = 200): Promise<BritpartImportItem[]> {
+  const out: BritpartImportItem[] = [];
+  let page = 1;
+  for (;;) {
+    // Lägg token även som query-param för att emulera PHP-pluginen (förutom headern)
+    const res = await britpartFetchRaw("/part/getall", { subcategoryId, page, pageSize, token: BRITPART_TOKEN });
+    const json = await safeJson<any>(res);
+    const parts: any[] =
+      Array.isArray(json?.parts) ? json.parts :
+      Array.isArray(json?.items) ? json.items :
+      Array.isArray(json)        ? json : [];
+
+    if (!parts.length) break;
+
+    for (const it of parts) {
+      const norm = normalizeGetAllItem(it, subcategoryId);
+      if (norm) out.push(norm);
+    }
+    page++;
+  }
+  return out;
+}
+
+/**
+ * Hämta ALLA parts för FLERA subkategorier, concat + deduplicera på SKU.
+ */
+export async function britpartGetAllBySubcategories(categoryIds: number[], pageSize = 200): Promise<BritpartImportItem[]> {
+  const all: BritpartImportItem[] = [];
+  for (const id of categoryIds) {
+    const chunk = await britpartGetAllBySubcategory(Number(id), pageSize);
+    all.push(...chunk);
+  }
+  // dedupe på sku
+  const seen = new Set<string>();
+  const deduped: BritpartImportItem[] = [];
+  for (const it of all) {
+    if (!it.sku || seen.has(it.sku)) continue;
+    seen.add(it.sku);
+    deduped.push(it);
+  }
+  return deduped;
+}
