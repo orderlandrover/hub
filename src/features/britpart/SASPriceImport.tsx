@@ -1,178 +1,198 @@
-// src/features/britpart/SASPriceImport.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useRef, useState } from "react";
 
-type Subcategory = { id: number; title: string; parentId?: number };
-type ImportRunBody = { categoryIds: number[]; publish?: boolean; defaultStock?: number; wooCategoryId?: number };
-type ImportRunResult = {
-  ok: boolean; total: number; created: number; updated: number; skipped: number;
-  errors: Array<{ sku?: string; id?: number; error: string }>; sample: any[]; error?: string;
-};
+type RoundModeUI = "nearest" | "up" | "down" | "none";
 
-async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const r = await fetch(input, { headers: { "Content-Type": "application/json" }, ...init });
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(()=>"")}`);
-  return (await r.json()) as T;
+async function safeJson(res: Response): Promise<any> {
+  const t = await res.text();
+  try { return JSON.parse(t); } catch { return { ok: false, raw: t, status: res.status }; }
 }
 
 export default function SASPriceImport() {
-  const [subs, setSubs] = useState<Subcategory[]>([]);
-  const [loadingList, setLoadingList] = useState(false);
-  const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState<number[]>([]);
-  const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<ImportRunResult | null>(null);
-  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [pub, setPub] = useState(true);
+  const [dry, setDry] = useState(true);
 
-  // Ladda subkategorier
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        setLoadingList(true);
-        const data = await jsonFetch<{ items: Subcategory[] } | Subcategory[]>("/api/britpart-subcategories");
-        const items = Array.isArray(data) ? data : data.items;
-        if (alive) setSubs(items ?? []);
-      } catch (e: any) {
-        if (alive) setErrMsg(e?.message || String(e));
-      } finally { if (alive) setLoadingList(false); }
-    })();
-    return () => { alive = false; };
-  }, []);
+  const [fx, setFx] = useState<number>(13.5);
+  const [markup, setMarkup] = useState<number>(25);
+  const [roundMode, setRoundMode] = useState<RoundModeUI>("nearest");
+  const [roundStep, setRoundStep] = useState<number>(1);
+  const [delimiter, setDelimiter] = useState<"," | ";" | "\t">(",");
 
-  const filtered = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    if (!f) return subs;
-    return subs.filter(s => String(s.id).includes(f) || (s.title ?? "").toLowerCase().includes(f));
-  }, [subs, filter]);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
-  const toggle = (id: number) =>
-    setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const CHUNK_ROWS = 500;
+  const INNER_BATCH = 250;
+  const PAUSE_MS = 600;
 
-  // *** Testa functions-routingen snabbt ***
-  async function testApi() {
-    setErrMsg(null);
-    try {
-      console.debug("[UI] GET /api/import-run");
-      const ping = await jsonFetch<{ ok: boolean; name: string }>("/api/import-run");
-      alert(`API OK: ${ping.name}`);
-    } catch (e: any) {
-      setErrMsg(e?.message || String(e));
-      alert(`API FEL: ${e?.message || e}`);
-    }
+  function addLog(s: string) {
+    const stamp = new Date().toLocaleString();
+    setLog((prev) => [`[${stamp}] ${s}`, ...prev].slice(0, 500));
   }
+  const parseNum = (v: string | number, fb = 0) => {
+    if (typeof v === "number") return Number.isFinite(v) ? v : fb;
+    const n = Number(String(v).replace(",", "."));
+    return Number.isFinite(n) ? n : fb;
+  };
 
-  async function runImport() {
-    setResult(null);
-    setErrMsg(null);
-    if (!selected.length) { setErrMsg("Välj minst en subkategori."); return; }
-
+  async function handleUpload(file: File) {
     try {
-      setImporting(true);
-      const body: ImportRunBody = { categoryIds: selected };
-      console.debug("[UI] POST /api/import-run body:", body);
-      const res = await jsonFetch<ImportRunResult>("/api/import-run", {
+      setBusy(true);
+      addLog(`Valid fil: ${file.name}`);
+
+      // 1) Hämta SAS
+      addLog("Begär SAS-URL…");
+      const sasRes = await fetch("/api/price-upload-sas", {
         method: "POST",
-        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name }),
       });
-      console.debug("[UI] /api/import-run result:", res);
-      setResult(res);
-      alert(`Import klar: skapade ${res.created}, uppdaterade ${res.updated}, fel ${res.errors?.length ?? 0}`);
+      const sasJson = await safeJson(sasRes);
+      if (!sasRes.ok || !sasJson?.sasUrl) throw new Error(sasJson?.error || "SAS fel");
+      addLog("SAS mottagen.");
+
+      // 2) PUT blob
+      addLog("Laddar upp filen till Blob Storage…");
+      const headers: Record<string, string> = { "x-ms-blob-type": "BlockBlob" };
+      headers["Content-Type"] = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "application/octet-stream");
+      const put = await fetch(sasJson.sasUrl, { method: "PUT", headers, body: file });
+      if (!put.ok) throw new Error(`Blob PUT ${put.status}: ${(await put.text()).slice(0, 200)}`);
+      addLog("Uppladdning klar.");
+
+      // 3) Chunkad serverbearbetning
+      const fxNum = parseNum(fx, 0);
+      const markupNum = parseNum(markup, 0);
+      const roundModeApi = roundMode === "nearest" ? "near" : roundMode === "up" ? "up" : roundMode === "down" ? "down" : "near";
+      const stepApi = roundMode === "none" ? 0 : Number(roundStep || 1);
+
+      let offset = 0;
+      let part = 1;
+      let grand = { updated: 0, skipped: 0, notFound: 0, badRows: 0, total: 0 };
+
+      while (true) {
+        addLog(`Startar server-bearbetning (del ${part})… fx=${fxNum}, markup=${markupNum}, step=${stepApi}, round=${roundModeApi}, offset=${offset}, limit=${CHUNK_ROWS}`);
+
+        const body = {
+          container: sasJson.container,
+          blobName: sasJson.blobName,
+          fx: fxNum,
+          markupPct: markupNum,
+          roundMode: roundModeApi,
+          step: stepApi,
+          publish: !!pub,
+          dryRun: !!dry,
+          batchSize: INNER_BATCH,
+          offset,
+          limitRows: CHUNK_ROWS,
+          csvDelimiter: delimiter,
+        };
+
+        const procRes = await fetch("/api/price-upload-from-blob", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const out = await safeJson(procRes);
+        if (!procRes.ok || !out?.ok) {
+          const msg = out?.error || out?.message || out?.raw || `HTTP ${procRes.status}`;
+          throw new Error(`Bearbetning misslyckades: ${msg}`);
+        }
+
+        grand.updated  += Number(out.updated || 0);
+        grand.skipped  += Number(out.skipped || 0);
+        grand.notFound += Number(out.notFound || 0);
+        grand.badRows  += Number(out.badRows || 0);
+        grand.total     = Number(out.total || grand.total);
+
+        addLog(
+          `Del ${part} klar: rader ${out.range?.offset}–${(out.range?.end ?? 0) - 1}, ` +
+          `updated=${out.updated}, skipped=${out.skipped}, notFound=${out.notFound}, bad=${out.badRows}`
+        );
+
+        const next = out.nextOffset as number | null;
+        if (!next || next >= out.total) break;
+        offset = next;
+        part++;
+        await new Promise((r) => setTimeout(r, PAUSE_MS));
+      }
+
+      addLog(
+        `KLART: total=${grand.total}, updated=${grand.updated}, skipped=${grand.skipped}, notFound=${grand.notFound}, bad=${grand.badRows}`
+      );
     } catch (e: any) {
-      setErrMsg(e?.message || String(e));
-      console.error(e);
-      alert(`Import fel: ${e?.message || e}`);
+      addLog(`Fel: ${e?.message || String(e)}`);
     } finally {
-      setImporting(false);
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
   return (
-    <div className="w-full max-w-none">
-      <div className="mb-4 flex items-center gap-3">
-        <h2 className="text-2xl font-semibold">Välj Britpart-subkategorier</h2>
-        <button type="button" onClick={testApi} className="text-xs rounded border px-2 py-1 hover:bg-slate-50">
-          Testa API
-        </button>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div>
+          <label className="text-xs opacity-70">Valutakurs (GBP→SEK)</label>
+          <input className="w-full rounded-lg border px-3 py-2" value={String(fx)} onChange={(e) => setFx(parseNum(e.target.value, fx))} />
+        </div>
+        <div>
+          <label className="text-xs opacity-70">Påslag (%)</label>
+          <input className="w-full rounded-lg border px-3 py-2" value={String(markup)} onChange={(e) => setMarkup(parseNum(e.target.value, markup))} />
+        </div>
+        <div>
+          <label className="text-xs opacity-70">Avrundning</label>
+          <select className="w-full rounded-lg border px-3 py-2" value={roundMode} onChange={(e) => setRoundMode(e.target.value as RoundModeUI)}>
+            <option value="nearest">Närmaste</option>
+            <option value="up">Uppåt</option>
+            <option value="down">Nedåt</option>
+            <option value="none">Ingen</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs opacity-70">Steg (SEK)</label>
+          <select className="w-full rounded-lg border px-3 py-2" value={roundStep} onChange={(e) => setRoundStep(Number(e.target.value))}>
+            <option value={1}>1</option>
+            <option value={5}>5</option>
+            <option value={10}>10</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs opacity-70">CSV-avgränsare</label>
+          <select className="w-full rounded-lg border px-3 py-2" value={delimiter} onChange={(e) => setDelimiter(e.target.value as any)}>
+            <option value=",">Komma (,)</option>
+            <option value=";">Semikolon (;)</option>
+            <option value="\t">Tab</option>
+          </select>
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mb-3">
+      <label className="block rounded-lg border px-4 py-6 text-center cursor-pointer bg-white hover:bg-slate-50 font-semibold">
         <input
-          className="border rounded px-3 py-2 w-full sm:w-80"
-          placeholder="Sök på namn eller ID…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          ref={fileRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
         />
-        <span className="text-sm text-slate-600">{filtered.length} träffar</span>
+        {busy ? "Bearbetar…" : "Välj fil…"}
+      </label>
+
+      <div className="flex items-center gap-4 text-sm">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" className="accent-amber-600" checked={pub} onChange={() => setPub(!pub)} />
+          Publicera direkt (annars draft)
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" className="accent-amber-600" checked={dry} onChange={() => setDry(!dry)} />
+          Dry-run (visa bara vad som skulle ändras)
+        </label>
+        <span className="ml-auto text-xs opacity-60">Kör automatiskt 500 rader/körning</span>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-4">
-        {loadingList ? (
-          <div className="col-span-full text-slate-600">Laddar…</div>
+      <div className="rounded-lg border bg-slate-50 p-3 text-sm font-mono leading-relaxed h-64 overflow-auto">
+        {log.length === 0 ? (
+          <div className="text-slate-400">Inga händelser ännu.</div>
         ) : (
-          filtered.map(s => {
-            const isSel = selected.includes(s.id);
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => toggle(s.id)}
-                className={"flex items-center justify-between rounded border px-3 py-2 text-left " +
-                  (isSel ? "bg-indigo-50 border-indigo-400" : "bg-white hover:bg-slate-50")}
-              >
-                <span className="truncate">{s.title ?? "—"} <span className="text-slate-500">#{s.id}</span></span>
-                <input type="checkbox" readOnly checked={isSel} className="pointer-events-none" />
-              </button>
-            );
-          })
-        )}
-      </div>
-
-      <div className="flex items-center gap-3 relative z-0">
-  <button
-    id="btn-importera"
-    type="button"
-    onClick={(e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.debug("[UI] klick på Importera", { selected });
-      void runImport();
-    }}
-    disabled={importing || selected.length === 0}
-    aria-busy={importing}
-    className={
-      "relative z-10 rounded px-4 py-2 text-white " +
-      (importing || selected.length === 0
-        ? "bg-gray-400 cursor-not-allowed"
-        : "bg-amber-600 hover:bg-amber-700")
-    }
-    title={selected.length === 0 ? "Välj minst en subkategori" : "Starta import"}
-  >
-    {importing ? "Importerar…" : `Importera ${selected.length} valda`}
-  </button>
-
-  {selected.length > 0 && (
-    <span className="text-xs text-slate-600">
-      ID: {selected.join(", ").slice(0, 120)}
-      {selected.join(", ").length > 120 ? "…" : ""}
-    </span>
-  )}
-</div>
-
-
-      <div className="mt-4 space-y-2">
-        {errMsg && <div className="text-red-700 bg-red-50 border border-red-200 rounded p-3">{errMsg}</div>}
-        {result && (
-          <div className="text-sm bg-green-50 border border-green-200 rounded p-3">
-            <div className="font-medium mb-1">Import klar</div>
-            <div>Total: {result.total} • Skapade: {result.created} • Uppdaterade: {result.updated} • Skippade: {result.skipped}</div>
-            {result.errors?.length ? (
-              <details className="mt-2"><summary className="cursor-pointer">Fel ({result.errors.length})</summary>
-                <ul className="list-disc ml-6 mt-1">
-                  {result.errors.slice(0, 10).map((e, i) => <li key={i}><code>{e.sku ?? "?"}</code>: {e.error}</li>)}
-                </ul>
-              </details>
-            ) : null}
-          </div>
+          <ul className="space-y-1">{log.map((l, i) => <li key={i}>{l}</li>)}</ul>
         )}
       </div>
     </div>
