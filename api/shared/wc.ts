@@ -2,10 +2,10 @@
 import { env } from "./env";
 
 /**
- * ENV som används:
- *  - WP_URL     (ex: https://landroverdelar.se) – ingen slash på slutet
- *  - WC_KEY     (Woo consumer key)
- *  - WC_SECRET  (Woo consumer secret)
+ * ENV:
+ *  - WP_URL    (ex: https://landroverdelar.se) – utan slash på slutet
+ *  - WC_KEY    (Woo consumer key)
+ *  - WC_SECRET (Woo consumer secret)
  */
 
 const WP_URL = (env.WP_URL || "").replace(/\/+$/, "");
@@ -45,14 +45,10 @@ function ensureLeadingSlash(p: string) {
   return p.startsWith("/") ? p : `/${p}`;
 }
 
-/** Bygg en full URL mot WP/Woo */
 function buildUrl(path: string): string {
-  if (!/^https?:\/\//i.test(path)) {
-    if (path.startsWith("/wp-json")) return `${WP_URL}${path}`;
-    path = `/wp-json/wc/v3${ensureLeadingSlash(path)}`;
-    return `${WP_URL}${path}`;
-  }
-  return path;
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith("/wp-json")) return `${WP_URL}${path}`;
+  return `${WP_URL}/wp-json/wc/v3${ensureLeadingSlash(path)}`;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,7 +63,7 @@ export async function readJsonSafe<T = any>(res: Response): Promise<T> {
 }
 
 /* --------------------------------------------------------------- */
-/* wcFetch med enkel backoff                                       */
+/* wcFetch med backoff                                             */
 /* --------------------------------------------------------------- */
 
 export async function wcFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -85,7 +81,6 @@ export async function wcFetch(path: string, init?: RequestInit): Promise<Respons
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
 
-      // 429/5xx => backoff
       if (res.status === 429 || res.status >= 500) {
         await sleep(400 + attempt * 300);
         continue;
@@ -119,13 +114,20 @@ export async function wcPutJSON<T = any>(path: string, payload: any): Promise<T>
   return readJsonSafe<T>(res);
 }
 
-/** Hämta produkt via SKU → returnera första träffen eller null */
+/** Hämta produkt-ID via SKU */
 export async function wcFindProductIdBySku(sku: string): Promise<number | null> {
   const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
-  if (!res.ok) return null;
   const arr = await readJsonSafe<any[]>(res);
   if (Array.isArray(arr) && arr[0]?.id) return Number(arr[0].id);
   return null;
+}
+
+/** Valfria wrappers */
+export async function wcCreateProduct(payload: any): Promise<Response> {
+  return wcFetch("/products", { method: "POST", body: JSON.stringify(payload) });
+}
+export async function wcUpdateProduct(id: number, payload: any): Promise<Response> {
+  return wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
 }
 
 /** Batch-uppdatera produkter (max 100 per request). Returnerar antal uppdaterade. */

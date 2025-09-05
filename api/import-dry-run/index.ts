@@ -2,71 +2,59 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { britpartGetPartCodesForCategories } from "../shared/britpart";
 
-type Body = {
-  categoryIds?: number[];
-  debug?: boolean;
-};
-
+/* ------------------------------- CORS ------------------------------- */
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
+type Body = {
+  categoryIds: number[];
+  limit?: number;
+};
+
+function jsonOk(data: Record<string, any> = {}): HttpResponseInit {
+  return { status: 200, headers: CORS, jsonBody: { ok: true, ...data } };
+}
+function jsonFail(message: string, extra?: Record<string, any>): HttpResponseInit {
+  return { status: 200, headers: CORS, jsonBody: { ok: false, error: message, ...(extra || {}) } };
+}
+
 app.http("import-dry-run", {
-  methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "import-dry-run",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  methods: ["POST", "OPTIONS", "GET"],
+  authLevel: "anonymous",
+  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
-    const started = Date.now();
+    if (req.method === "GET") {
+      return jsonOk({ name: "import-dry-run" });
+    }
+
+    let body: Body | undefined;
+    try {
+      body = (await req.json()) as Body;
+    } catch {
+      return jsonFail("Invalid JSON body");
+    }
+    if (!body?.categoryIds?.length) return jsonFail("categoryIds required");
 
     try {
-      let body: Body | undefined;
-      try {
-        body = (await req.json()) as Body;
-      } catch {
-        return {
-          status: 400,
-          headers: CORS,
-          jsonBody: { ok: false, error: "Body måste vara JSON: { categoryIds: number[] }" },
-        };
-      }
+      const limit = Math.max(0, Number(body.limit ?? 0));
+      let codes = await britpartGetPartCodesForCategories(body.categoryIds);
 
-      const categoryIds = (body?.categoryIds ?? [])
-        .map(Number)
-        .filter((n) => Number.isFinite(n));
+      // TS-typa pilar → inga implicit any
+      codes = codes
+        .filter((s: unknown): s is string => typeof s === "string")
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0);
 
-      if (categoryIds.length === 0) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "categoryIds (number[]) krävs" } };
-      }
+      if (limit > 0) codes = codes.slice(0, limit);
 
-      const partCodesRaw = await britpartGetPartCodesForCategories(categoryIds);
-      const partCodes = Array.from(
-        new Set((partCodesRaw ?? [])
-          .filter((s) => typeof s === "string")
-          .map((s) => s.trim())
-          .filter(Boolean))
-      );
-
-      const total = partCodes.length;
-      const elapsedMs = Date.now() - started;
-
-      const resp = {
-        ok: true,
-        total,
-        summary: { create: 0, update: total, skip: 0 },
-        sample: partCodes.slice(0, 10).sort(),
-        debug: body?.debug ? { inCategoryIds: categoryIds, expandedCodesCount: total, elapsedMs } : undefined,
-      };
-
-      if (body?.debug) ctx.log("Dry-run debug:", resp.debug);
-
-      return { status: 200, headers: CORS, jsonBody: resp };
+      return jsonOk({ total: codes.length, codes });
     } catch (e: any) {
-      ctx.error("import-dry-run error", e);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message ?? e) } };
+      return jsonFail(e?.message || "Dry-run failure");
     }
   },
 });
