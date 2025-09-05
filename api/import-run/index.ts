@@ -45,9 +45,18 @@ app.http("import-run", {
   authLevel: "anonymous",
   handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
-    if (req.method === "GET") return ok({ name: "import-run" });
+    if (req.method === "GET") {
+      // Liten GET-ping
+      if (req.query.get("ping") === "1") return ok({ name: "import-run", ping: "alive" });
+      return ok({ name: "import-run" });
+    }
 
     // ---- POST ----
+    // Tidig ping/diag som INTE importerar något (för att ringa in var 500 uppstår)
+    if (req.query.get("ping") === "1") {
+      return ok({ step: "pre-body", method: "POST" });
+    }
+
     let body: RunBody | undefined;
     try {
       body = (await req.json()) as RunBody;
@@ -56,7 +65,11 @@ app.http("import-run", {
     }
     if (!body?.categoryIds?.length) return fail("categoryIds required");
 
-    // Diagnostikflagga (via query eller body.debug)
+    // Ännu en tidig diag innan imports
+    if (req.query.get("stage") === "pre") {
+      return ok({ step: "after-body", body });
+    }
+
     const diagFlag = req.query.get("diag") === "1" || !!body.debug;
 
     try {
@@ -76,15 +89,27 @@ app.http("import-run", {
         return res;
       };
 
-      // Små helpers (typade för TS)
+      // Helpers
       const pickSku = (it: any): string | undefined =>
         typeof it?.sku === "string" && it.sku.trim() ? it.sku.trim() : undefined;
 
       const urlsFromItem = (it: any): string[] => {
-        const arr: unknown[] = Array.isArray((it as any).imageUrls)
-          ? (it as any).imageUrls
-          : (it.images?.map((x: any) => x?.url || x?.src || x?.href) || []);
-        return arr.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u));
+        const out: string[] = [];
+        // 1) imageUrl som sträng (vanligast från /part/getall)
+        if (typeof it?.imageUrl === "string" && /^https?:\/\//i.test(it.imageUrl)) out.push(it.imageUrl);
+        // 2) imageUrls som lista
+        if (Array.isArray((it as any).imageUrls)) {
+          for (const u of (it as any).imageUrls) if (typeof u === "string" && /^https?:\/\//i.test(u)) out.push(u);
+        }
+        // 3) images [{url|src|href}]
+        if (Array.isArray(it?.images)) {
+          for (const x of it.images) {
+            const u = x?.url || x?.src || x?.href;
+            if (typeof u === "string" && /^https?:\/\//i.test(u)) out.push(u);
+          }
+        }
+        // unika
+        return Array.from(new Set(out));
       };
 
       const publish = !!body.publish;
@@ -111,7 +136,7 @@ app.http("import-run", {
           const imageUrls = urlsFromItem(raw);
           const name = (raw.name && String(raw.name).trim()) || sku;
           const description = (raw.description && String(raw.description)) || "";
-          const regular_price = "0"; // PHP-varianten satte _price/_regular_price = 0
+          const regular_price = "0"; // vi speglar PHP-beteendet
 
           const targetCatId = forcedWooCategoryId ?? (raw.categoryId ? Number(raw.categoryId) : undefined);
 
@@ -173,21 +198,15 @@ app.http("import-run", {
 
       const result: ImportResult = { ok: true, total: items.length, created, updated, skipped, errors, sample, debug };
       if (diagFlag) {
-        // Minimal diagnos: visa vilka env-nycklar som verkar finnas (maskerad)
         const k = Object.keys(process.env || {}).filter((x) =>
-          /BRITPART|WC_|WOO|CONSUMER|SECRET|KEY|BASE|URL/i.test(x)
+          /BRITPART|WC_|WOO|CONSUMER|SECRET|KEY|BASE|URL|WP_URL/i.test(x)
         );
         result.diagnostics = { envKeys: k.sort(), node: process.version };
       }
       return ok(result);
     } catch (e: any) {
-      // Här hamnar även modulfel (t.ex. i shared/britpart.ts eller shared/wc.ts)
       const diag = diagFlag
-        ? {
-            message: e?.message || String(e),
-            stack: (e && e.stack) || undefined,
-            node: process.version,
-          }
+        ? { message: e?.message || String(e), stack: (e && e.stack) || undefined, node: process.version }
         : undefined;
       return fail(e?.message || "Backend call failure", { diagnostics: diag });
     }
