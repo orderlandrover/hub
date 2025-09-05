@@ -1,5 +1,4 @@
-// src/App.tsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import "./brand.css";
 import SASPriceImport from "./features/britpart/SASPriceImport";
 import ProductsTab from "./features/products/ProductsTab";
@@ -9,22 +8,10 @@ type Subcategory = { id: number; title: string; parentId?: number };
 type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
 type WCCategory = { id: number; name: string; parent: number };
 
-type ImportRunResult = {
-  ok: boolean;
-  total: number;
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: Array<{ sku?: string; id?: number; error: string }>;
-  sample: any[];
-  error?: string;
-};
-
 /* --------------------------- Utils / UI --------------------------- */
 const API = {
   BRITPART_SUBCATS: "/api/britpart-subcategories",
   WC_CATEGORIES: "/api/wc-categories",
-  IMPORT_RUN: "/api/import-run",
 };
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -37,30 +24,31 @@ function classNames(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-function Badge({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <span className={classNames("px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700", className)}>
-      {children}
-    </span>
-  );
+function Badge({ children }: { children: React.ReactNode }) {
+  return <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{children}</span>;
 }
 
-// Knapp som forwardar alla props till <button> och sätter type="button"
 function Button({
-  className = "",
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  const { disabled } = props;
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  // Använder din guldknapp via .ui-btn
   return (
     <button
-      type={props.type ?? "button"}
-      {...props}
+      disabled={disabled}
+      onClick={onClick}
       className={classNames(
         "ui-btn px-3 py-2 rounded-xl text-sm font-semibold transition",
-        disabled && "opacity-50 cursor-not-allowed",
-        className
+        disabled && "opacity-50 cursor-not-allowed"
       )}
-    />
+    >
+      {children}
+    </button>
   );
 }
 
@@ -102,6 +90,7 @@ function SubcategorySelector({
       try {
         setLoading(true);
         const res = await jsonFetch<any>(API.BRITPART_SUBCATS);
+        if (!alive) return;
 
         const raw: any[] =
           Array.isArray(res?.items) ? res.items :
@@ -114,12 +103,12 @@ function SubcategorySelector({
           parentId: typeof c.parentId === "number" ? c.parentId : undefined,
         }));
         const sorted = normalized.sort((a, b) => a.title.localeCompare(b.title, "sv"));
-        if (alive) setSubcats(sorted);
+        setSubcats(sorted);
       } catch (e) {
         console.error(e);
-        if (alive) setSubcats([]); // fail safe
+        setSubcats([]); // fail safe
       } finally {
-        if (alive) setLoading(false);
+        setLoading(false);
       }
     })();
     return () => {
@@ -263,36 +252,10 @@ export default function App() {
   const [tab, setTab] = useState<TabKey>("import");
   const [selected, setSelected] = useState<number[]>([]);
 
-  // Import-state + handler
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportRunResult | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
-
-  async function runImport() {
-    if (!selected.length) return;
-    setImportError(null);
-    setImportResult(null);
-
-    try {
-      setImporting(true);
-      const res = await jsonFetch<ImportRunResult>(API.IMPORT_RUN, {
-        method: "POST",
-        body: JSON.stringify({ categoryIds: selected }),
-      });
-      setImportResult(res);
-      // console.debug("Import-resultat:", res);
-    } catch (e: any) {
-      setImportError(e?.message || String(e));
-      // console.error(e);
-    } finally {
-      setImporting(false);
-    }
-  }
-
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="sticky top-0 z-10 ui-header border-b border-gray-800/30">
-        <div className="w-full max-w-none px-4 py-3 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
@@ -305,8 +268,8 @@ export default function App() {
         </div>
       </header>
 
-      <main className="w-full max-w-none px-4 sm:px-6 lg:px-8 py-6">
-        {/* Flikar */}
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {/* Flikar med dina färger */}
         <nav className="flex flex-wrap gap-3">
           {TABS.map((t) => {
             const active = tab === t.key;
@@ -352,32 +315,10 @@ export default function App() {
                 <p className="text-xs text-gray-500 mt-1">Ex: 1 = hela kr, 5 = femkronorssteg.</p>
               </div>
             </div>
-
             <div className="mt-3 flex items-center gap-2">
-              <Button
-                id="btn-importera"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  runImport();
-                }}
-                disabled={importing || !selected.length}
-              >
-                {importing ? "Importerar…" : `Importera ${selected.length} valda`}
-              </Button>
+              <Button disabled={!selected.length}>Importera {selected.length} valda</Button>
               <Badge>ID: {selected.join(", ") || "–"}</Badge>
             </div>
-
-            {importError && (
-              <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
-                Fel: {importError}
-              </div>
-            )}
-            {importResult && (
-              <div className="mt-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded p-3">
-                Klar • Total: {importResult.total} • Skapade: {importResult.created} • Uppdaterade: {importResult.updated} • Skippade: {importResult.skipped} • Fel: {importResult.errors?.length ?? 0}
-              </div>
-            )}
           </Section>
         )}
 
