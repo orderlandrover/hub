@@ -1,5 +1,7 @@
 // api/import-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { britpartGetAllBySubcategories } from "../shared/britpart";
+import { wcFindProductIdBySku, wcFetch } from "../shared/wc";
 
 /* ------------------------------- CORS ------------------------------- */
 const CORS = {
@@ -45,18 +47,13 @@ app.http("import-run", {
   authLevel: "anonymous",
   handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
+
     if (req.method === "GET") {
-      // Liten GET-ping
       if (req.query.get("ping") === "1") return ok({ name: "import-run", ping: "alive" });
       return ok({ name: "import-run" });
     }
 
     // ---- POST ----
-    // Tidig ping/diag som INTE importerar något (för att ringa in var 500 uppstår)
-    if (req.query.get("ping") === "1") {
-      return ok({ step: "pre-body", method: "POST" });
-    }
-
     let body: RunBody | undefined;
     try {
       body = (await req.json()) as RunBody;
@@ -65,19 +62,10 @@ app.http("import-run", {
     }
     if (!body?.categoryIds?.length) return fail("categoryIds required");
 
-    // Ännu en tidig diag innan imports
-    if (req.query.get("stage") === "pre") {
-      return ok({ step: "after-body", body });
-    }
-
     const diagFlag = req.query.get("diag") === "1" || !!body.debug;
 
     try {
-      // *** Dynamiska imports inne i try → även modulfel fångas ***
-      const { britpartGetAllBySubcategories } = await import("../shared/britpart");
-      const { wcFindProductIdBySku, wcFetch } = await import("../shared/wc");
-
-      // Små Woo-wrappers med path-fallback
+      // Woo wrappers (fallback för ev. 404 utan ledande slash)
       const wcCreateProduct = async (payload: any): Promise<Response> => {
         let res = await wcFetch("/products", { method: "POST", body: JSON.stringify(payload) });
         if (res.status === 404) res = await wcFetch("products", { method: "POST", body: JSON.stringify(payload) });
@@ -95,20 +83,16 @@ app.http("import-run", {
 
       const urlsFromItem = (it: any): string[] => {
         const out: string[] = [];
-        // 1) imageUrl som sträng (vanligast från /part/getall)
         if (typeof it?.imageUrl === "string" && /^https?:\/\//i.test(it.imageUrl)) out.push(it.imageUrl);
-        // 2) imageUrls som lista
         if (Array.isArray((it as any).imageUrls)) {
           for (const u of (it as any).imageUrls) if (typeof u === "string" && /^https?:\/\//i.test(u)) out.push(u);
         }
-        // 3) images [{url|src|href}]
         if (Array.isArray(it?.images)) {
           for (const x of it.images) {
             const u = x?.url || x?.src || x?.href;
             if (typeof u === "string" && /^https?:\/\//i.test(u)) out.push(u);
           }
         }
-        // unika
         return Array.from(new Set(out));
       };
 
@@ -118,8 +102,15 @@ app.http("import-run", {
       const debug = !!body.debug || req.query.get("debug") === "1";
       const limit = Math.max(0, Number(body.limit ?? 0));
 
-      // 1) Hämta precis som gamla PHP-pluggen: /part/getall per subkategori, med paginering
-      let items: any[] = await britpartGetAllBySubcategories(body.categoryIds);
+      // 1) Hämta /part/getall per subkategori (som i PHP-pluggen)
+      let items: any[] = [];
+      try {
+        items = await britpartGetAllBySubcategories(body.categoryIds);
+      } catch (e: any) {
+        // Fånga env/token/HTTP-fel här → returnera JSON istället för 500
+        return fail(e?.message || "Britpart fetch failed", diagFlag ? { diagnostics: { where: "britpart", node: process.version } } : undefined);
+      }
+
       if (limit > 0) items = items.slice(0, limit);
       if (!items.length) return ok({ total: 0, created: 0, updated: 0, skipped: 0, errors: [], sample: [], debug });
 
@@ -136,7 +127,7 @@ app.http("import-run", {
           const imageUrls = urlsFromItem(raw);
           const name = (raw.name && String(raw.name).trim()) || sku;
           const description = (raw.description && String(raw.description)) || "";
-          const regular_price = "0"; // vi speglar PHP-beteendet
+          const regular_price = "0"; // spegla PHP-beteendet
 
           const targetCatId = forcedWooCategoryId ?? (raw.categoryId ? Number(raw.categoryId) : undefined);
 
