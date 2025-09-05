@@ -123,13 +123,8 @@ export async function britpartFetchRaw(
   throw lastErr ?? new Error("Britpart call failed");
 }
 
-/** --------------------------------------------------------------- */
-/** Kategori-endpoints (behövs för UI)                               */
-/** --------------------------------------------------------------- */
-
-export async function getCategory(id: number): Promise<BritpartCategoryResponse> {
-  const res = await britpartFetchRaw(`/part/getcategories?id=${id}`);
-  const json = await safeJson(res);
+/** Normalisering av kategori-svar (stöder {items:{...}} och {...}) */
+function normalizeCategory(json: any): BritpartCategoryResponse {
   const obj = json?.items ?? json ?? {};
   return {
     id: Number(obj?.id),
@@ -137,23 +132,36 @@ export async function getCategory(id: number): Promise<BritpartCategoryResponse>
     url: obj?.url,
     partCodes: Array.isArray(obj?.partCodes) ? obj.partCodes : undefined,
     subcategoryIds: Array.isArray(obj?.subcategoryIds)
-      ? obj.subcategoryIds.map((n: any) => Number(n))
+      ? (obj.subcategoryIds as any[]).map((n: any) => Number(n))
       : undefined,
     subcategories: Array.isArray(obj?.subcategories)
-      ? obj.subcategories.map((s: any) => ({
+      ? (obj.subcategories as any[]).map((s: any) => ({
           id: Number(s?.id),
           title: s?.title,
           partCodes: Array.isArray(s?.partCodes) ? s.partCodes : undefined,
           subcategoryIds: Array.isArray(s?.subcategoryIds)
-            ? s.subcategoryIds.map((n: any) => Number(n))
+            ? (s.subcategoryIds as any[]).map((n: any) => Number(n))
             : undefined,
         }))
       : undefined,
   };
 }
 
+/** --------------------------------------------------------------- */
+/** Kategori-endpoints (UI) – token som QUERY-parameter              */
+/** --------------------------------------------------------------- */
+
+export async function getCategory(id: number): Promise<BritpartCategoryResponse> {
+  // Viktigt: token i query, inte bara header (speglar PHP-pluginen)
+  const res = await britpartFetchRaw("/part/getcategories", { id, token: BRITPART_TOKEN });
+  const json = await safeJson(res);
+  return normalizeCategory(json);
+}
+
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
-  return getCategory(3);
+  const res = await britpartFetchRaw("/part/getcategories", { id: 3, token: BRITPART_TOKEN });
+  const json = await safeJson(res);
+  return normalizeCategory(json);
 }
 
 /** --------------------------------------------------------------- */
@@ -165,7 +173,9 @@ function normalizeGetAllItem(raw: any, subcategoryId: number): BritpartImportIte
   if (!sku) return undefined;
 
   const imageUrls: string[] = Array.isArray(raw?.imageUrls)
-    ? raw.imageUrls.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
+    ? (raw.imageUrls as any[]).filter(
+        (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u)
+      )
     : [];
 
   return {
