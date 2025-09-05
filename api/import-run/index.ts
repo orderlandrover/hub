@@ -14,9 +14,9 @@ type RunBody = {
   categoryIds: number[];
   publish?: boolean;
   defaultStock?: number;
-  wooCategoryId?: number; // om satt används denna Woo-kategori för alla produkter
-  debug?: boolean;        // true = skriv inte till Woo, returnera bara previews
-  limit?: number;         // max antal produkter (för test)
+  wooCategoryId?: number;
+  debug?: boolean;
+  limit?: number;
 };
 
 type ImportResult = {
@@ -65,17 +65,22 @@ app.http("import-run", {
     const diagFlag = req.query.get("diag") === "1" || !!body.debug;
 
     try {
-      // Woo wrappers (fallback för ev. 404 utan ledande slash)
-      const wcCreateProduct = async (payload: any): Promise<Response> => {
-        let res = await wcFetch("/products", { method: "POST", body: JSON.stringify(payload) });
-        if (res.status === 404) res = await wcFetch("products", { method: "POST", body: JSON.stringify(payload) });
-        return res;
-      };
-      const wcUpdateProduct = async (id: number, payload: any): Promise<Response> => {
-        let res = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-        if (res.status === 404) res = await wcFetch(`products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-        return res;
-      };
+      const publish = !!body.publish;
+      const defaultStock = Number.isFinite(Number(body.defaultStock)) ? Number(body.defaultStock) : 100;
+      const forcedWooCategoryId = body.wooCategoryId ? Number(body.wooCategoryId) : undefined;
+      const debug = !!body.debug || req.query.get("debug") === "1";
+      const limit = Math.max(0, Number(body.limit ?? 0));
+
+      // 1) Hämta Britpart via /part/getall (som i PHP-pluggen)
+      let items: any[] = [];
+      try {
+        items = await britpartGetAllBySubcategories(body.categoryIds);
+      } catch (e: any) {
+        return fail(e?.message || "Britpart fetch failed",
+          diagFlag ? { diagnostics: { where: "britpart", node: process.version } } : undefined);
+      }
+      if (limit > 0) items = items.slice(0, limit);
+      if (!items.length) return ok({ total: 0, created: 0, updated: 0, skipped: 0, errors: [], sample: [], debug });
 
       // Helpers
       const pickSku = (it: any): string | undefined =>
@@ -96,27 +101,57 @@ app.http("import-run", {
         return Array.from(new Set(out));
       };
 
-      const publish = !!body.publish;
-      const defaultStock = Number.isFinite(Number(body.defaultStock)) ? Number(body.defaultStock) : 100;
-      const forcedWooCategoryId = body.wooCategoryId ? Number(body.wooCategoryId) : undefined;
-      const debug = !!body.debug || req.query.get("debug") === "1";
-      const limit = Math.max(0, Number(body.limit ?? 0));
-
-      // 1) Hämta /part/getall per subkategori (som i PHP-pluggen)
-      let items: any[] = [];
-      try {
-        items = await britpartGetAllBySubcategories(body.categoryIds);
-      } catch (e: any) {
-        // Fånga env/token/HTTP-fel här → returnera JSON istället för 500
-        return fail(e?.message || "Britpart fetch failed", diagFlag ? { diagnostics: { where: "britpart", node: process.version } } : undefined);
-      }
-
-      if (limit > 0) items = items.slice(0, limit);
-      if (!items.length) return ok({ total: 0, created: 0, updated: 0, skipped: 0, errors: [], sample: [], debug });
-
       let created = 0, updated = 0, skipped = 0;
       const errors: any[] = [];
       const sample: any[] = [];
+
+      // 2) Debug-läge: rör INTE Woo alls → inga env/auth-problem kan orsaka 500.
+      if (debug) {
+        for (const raw of items) {
+          const sku = pickSku(raw);
+          if (!sku) { skipped++; continue; }
+          const imageUrls = urlsFromItem(raw);
+          const name = (raw.name && String(raw.name).trim()) || sku;
+          const description = (raw.description && String(raw.description)) || "";
+          const targetCatId = forcedWooCategoryId ?? (raw.categoryId ? Number(raw.categoryId) : undefined);
+
+          const preview: any = {
+            name,
+            sku,
+            description,
+            manage_stock: true,
+            stock_status: "instock",
+            stock_quantity: defaultStock,
+            regular_price: "0",
+            ...(targetCatId ? { categories: [{ id: targetCatId }] } : {}),
+            ...(imageUrls.length ? { images: imageUrls.map((src) => ({ src })) } : {}),
+            ...(publish ? { status: "publish" } : {}),
+          };
+          if (sample.length < 8) sample.push({ action: "would create/update (no-woo-check)", sku, preview });
+          created++; // vi räknar bara “skulle skapa/uppdatera”
+        }
+
+        const result: ImportResult = { ok: true, total: items.length, created, updated, skipped, errors, sample, debug };
+        if (diagFlag) {
+          const k = Object.keys(process.env || {}).filter((x) =>
+            /BRITPART|WC_|WOO|CONSUMER|SECRET|KEY|BASE|URL|WP_URL/i.test(x)
+          );
+          result.diagnostics = { envKeys: k.sort(), node: process.version, mode: "debug-no-woo" };
+        }
+        return ok(result);
+      }
+
+      // 3) Live-läge: nu slår vi på Woo
+      const wcCreateProduct = async (payload: any): Promise<Response> => {
+        let res = await wcFetch("/products", { method: "POST", body: JSON.stringify(payload) });
+        if (res.status === 404) res = await wcFetch("products", { method: "POST", body: JSON.stringify(payload) });
+        return res;
+      };
+      const wcUpdateProduct = async (id: number, payload: any): Promise<Response> => {
+        let res = await wcFetch(`/products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+        if (res.status === 404) res = await wcFetch(`products/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+        return res;
+      };
 
       for (const raw of items) {
         const sku = pickSku(raw);
@@ -127,29 +162,17 @@ app.http("import-run", {
           const imageUrls = urlsFromItem(raw);
           const name = (raw.name && String(raw.name).trim()) || sku;
           const description = (raw.description && String(raw.description)) || "";
-          const regular_price = "0"; // spegla PHP-beteendet
-
+          const regular_price = "0";
           const targetCatId = forcedWooCategoryId ?? (raw.categoryId ? Number(raw.categoryId) : undefined);
 
           const basePayload: any = {
-            name,
-            sku,
-            description,
-            manage_stock: true,
-            stock_status: "instock",
-            stock_quantity: defaultStock,
+            name, sku, description,
+            manage_stock: true, stock_status: "instock", stock_quantity: defaultStock,
             regular_price,
           };
           if (targetCatId) basePayload.categories = [{ id: targetCatId }];
-          if (imageUrls.length) basePayload.images = imageUrls.map((src: string) => ({ src }));
+          if (imageUrls.length) basePayload.images = imageUrls.map((src) => ({ src }));
           if (publish) basePayload.status = "publish";
-
-          if (debug) {
-            const preview = { ...basePayload, __existingId: existingId };
-            if (sample.length < 8) sample.push({ action: existingId ? "would update" : "would create", sku, preview });
-            if (existingId) updated++; else created++;
-            continue;
-          }
 
           if (!existingId) {
             const res = await wcCreateProduct(basePayload);
@@ -170,7 +193,7 @@ app.http("import-run", {
               regular_price,
             };
             if (targetCatId) updatePayload.categories = basePayload.categories;
-            if (imageUrls.length) updatePayload.images = imageUrls.map((src: string) => ({ src }));
+            if (imageUrls.length) updatePayload.images = imageUrls.map((src) => ({ src }));
             if (publish) updatePayload.status = "publish";
 
             const res = await wcUpdateProduct(Number(existingId), updatePayload);
@@ -187,17 +210,17 @@ app.http("import-run", {
         }
       }
 
-      const result: ImportResult = { ok: true, total: items.length, created, updated, skipped, errors, sample, debug };
+      const result: ImportResult = { ok: true, total: items.length, created, updated, skipped, errors, sample, debug: false };
       if (diagFlag) {
         const k = Object.keys(process.env || {}).filter((x) =>
           /BRITPART|WC_|WOO|CONSUMER|SECRET|KEY|BASE|URL|WP_URL/i.test(x)
         );
-        result.diagnostics = { envKeys: k.sort(), node: process.version };
+        result.diagnostics = { envKeys: k.sort(), node: process.version, mode: "live" };
       }
       return ok(result);
     } catch (e: any) {
       const diag = diagFlag
-        ? { message: e?.message || String(e), stack: (e && e.stack) || undefined, node: process.version }
+        ? { message: e?.message || String(e), stack: e?.stack, node: process.version }
         : undefined;
       return fail(e?.message || "Backend call failure", { diagnostics: diag });
     }
