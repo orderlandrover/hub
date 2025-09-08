@@ -1,3 +1,4 @@
+// api/import-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import {
   britpartGetPartCodesForCategories,
@@ -19,11 +20,8 @@ const CORS = {
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s || "");
-const looksLikeImage = (s?: string) =>
-  !!s && /\.(jpe?g|png|gif|webp|bmp|tiff?)($|\?)/i.test(s);
-
-/** Vi tar bara med bilder som ser rimliga ut (minskar Woo 400-fel). */
-const validImage = (url?: string) => isHttpUrl(url) && looksLikeImage(url);
+/** Godkänn alla http(s)-bilder (Woo sideloadar ändå) */
+const validImage = (url?: string) => isHttpUrl(url);
 
 /** Skapa i små chunkar. Vid fel: gå ner till per-produkt så resten inte drabbas. */
 async function createProductsSafe(items: WooCreate[], ctx: InvocationContext) {
@@ -120,7 +118,7 @@ app.http("import-run", {
       const skus = Array.from(new Set(partCodes.map(String)));
       ctx.log?.(`collect-skus: ${skus.length}`);
 
-      // 2) Hämta titel/bild/beskrivning för alla SKU
+      // 2) Hämta titel/bild/beskrivning för alla SKU (GetAll-first i shared/britpart.ts)
       where = "fetch-basics";
       const basics = await britpartGetBasicForSkus(skus);
       const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
@@ -153,6 +151,10 @@ app.http("import-run", {
       const toCreateSkus = skus.filter((s) => !existing.has(s));
       const createPayloads: WooCreate[] = toCreateSkus.map((sku) => {
         const b = basics[sku] || {};
+        const meta = [];
+        if (b.imageUrl) meta.push({ key: "_lr_source_image_url", value: b.imageUrl });
+        if (b["imageSource"]) meta.push({ key: "_lr_source", value: b["imageSource"] });
+
         return {
           name: (b.title && b.title.trim()) || sku,
           sku,
@@ -161,6 +163,7 @@ app.http("import-run", {
           description: b.description,
           short_description: b.description,
           images: validImage(b.imageUrl) ? [{ src: b.imageUrl!, position: 0 }] : undefined,
+          meta_data: meta.length ? meta : undefined,
         };
       });
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
@@ -191,7 +194,12 @@ app.http("import-run", {
           invalidImageUrls++;
         }
 
-        if (u.name || u.images || u.description || u.short_description) {
+        const meta = [];
+        if (b.imageUrl) meta.push({ key: "_lr_source_image_url", value: b.imageUrl });
+        if ((b as any).imageSource) meta.push({ key: "_lr_source", value: (b as any).imageSource });
+        if (meta.length) (u as any).meta_data = meta;
+
+        if (u.name || u.images || u.description || u.short_description || (u as any).meta_data) {
           updates.push(u);
         }
       }

@@ -18,7 +18,7 @@ const WC_SECRET = env.WC_SECRET || "";
 
 export type WooStatus = "publish" | "draft" | "private" | "pending";
 
-/** Woo bildobjekt enligt REST API (id/src/name/alt/position) */
+/** Woo bildobjekt enligt REST API */
 export type WooImage = {
   id?: number;
   src?: string;
@@ -27,21 +27,25 @@ export type WooImage = {
   position?: number;
 };
 
+/** Key/Value-meta som lagras på produkten */
+export type WooMeta = { key: string; value: any };
+
 export type WooUpdate = {
   id: number;
 
-  // Pris/lagersaker (som tidigare)
+  // Pris/lagersaker
   regular_price?: string;
   status?: WooStatus;
   manage_stock?: boolean;
   stock_quantity?: number | null;
   stock_status?: "instock" | "outofstock" | "onbackorder";
 
-  // Nya fält som vi använder i importen
+  // Fält vi sätter i importen
   name?: string;
   description?: string;
   short_description?: string;
   images?: WooImage[];
+  meta_data?: WooMeta[];
 };
 
 export type WooCreate = {
@@ -54,6 +58,7 @@ export type WooCreate = {
   short_description?: string;
   categories?: { id: number }[];
   images?: WooImage[];
+  meta_data?: WooMeta[];
 };
 
 /* --------------------------------------------------------------- */

@@ -1,3 +1,4 @@
+// api/shared/britpart.ts
 import { env } from "./env";
 
 /** Bas och token */
@@ -20,18 +21,50 @@ export type BritpartCategoryResponse = {
   }>;
 };
 
+/** Data vi exponerar uppåt (titel/bild/description + källa) */
 export type BritpartBasic = {
   sku: string;
   title?: string;
-  description?: string;
-  imageUrl?: string;
+  description?: string;   // HTML från Britpart (content + ev. subText)
+  imageUrl?: string;      // presigned S3-URL eller absolut http(s)
+  imageSource?:           // så vi vet var bilden kom ifrån
+    | "getall.imageUrls[0]"
+    | "getall.imageUrls[n]"
+    | "api.imageUrl"
+    | "api.images[0]"
+    | "api.media[0]"
+    | "og:image"
+    | "twitter:image"
+    | "link:image_src"
+    | "html:img"
+    | "none";
+};
+
+/** GetAll-schema (sammandrag) */
+export type GetAllPart = {
+  code: string;
+  title?: string;
+  content?: string;        // HTML
+  subText?: string;        // HTML
+  url?: string;
+  imageUrls?: string[];    // presigned S3 eller publika
+  datePublished?: string;
+  similarParts?: string[];
+  categoryIds?: number[];
+};
+
+export type GetAllResponse = {
+  total: number;
+  totalPages: number;
+  page: number;
+  parts: GetAllPart[];
 };
 
 /* ----------------------------- Helpers ----------------------------- */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function ensureBaseConfigured() {
+function ensureConfigured() {
   if (!BRITPART_BASE || !BRITPART_TOKEN) {
     throw new Error("Britpart env saknas: BRITPART_BASE/BRITPART_TOKEN");
   }
@@ -48,46 +81,13 @@ async function safeJson<T = any>(res: Response): Promise<T> {
 
 function toAbs(u?: string): string | undefined {
   if (!u) return undefined;
-  try {
-    // Gör relativa länkar absoluta utifrån BRITPART_BASE
-    return new URL(u, BRITPART_BASE).toString();
-  } catch {
-    return undefined;
-  }
+  try { return new URL(u, BRITPART_BASE).toString(); } catch { return undefined; }
 }
 
-function normalizeCategory(raw: any): BritpartCategoryResponse {
-  const obj = raw?.items ?? raw ?? {};
-
-  const normSubcats: BritpartCategoryResponse["subcategories"] =
-    Array.isArray(obj.subcategories)
-      ? obj.subcategories.map((s: any) => ({
-          id: Number(s?.id),
-          title: s?.title,
-          partCodes: Array.isArray(s?.partCodes) ? s.partCodes : undefined,
-          subcategoryIds: Array.isArray(s?.subcategoryIds)
-            ? s.subcategoryIds.map((n: any) => Number(n))
-            : undefined,
-        }))
-      : undefined;
-
-  return {
-    id: Number(obj?.id),
-    title: obj?.title,
-    url: obj?.url,
-    partCodes: Array.isArray(obj?.partCodes) ? obj.partCodes : undefined,
-    subcategoryIds: Array.isArray(obj?.subcategoryIds)
-      ? obj?.subcategoryIds.map((n: any) => Number(n))
-      : undefined,
-    subcategories: normSubcats,
-  };
-}
-
-/* ----------------------------- Fetch ----------------------------- */
+/* ----------------------------- Lågnivå fetch ----------------------------- */
 
 async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Response> {
-  ensureBaseConfigured();
-
+  ensureConfigured();
   const url = path.startsWith("http")
     ? path
     : `${BRITPART_BASE}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
@@ -95,7 +95,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
     "Content-Type": "application/json",
-    Token: BRITPART_TOKEN,
+    Token: BRITPART_TOKEN, // token via header
   };
 
   let lastErr: any;
@@ -118,10 +118,36 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
   throw lastErr ?? new Error("Britpart call failed");
 }
 
-// Exportnamn som andra moduler använder
+/** Exporteras ibland separat */
 export { britpartFetchRaw as britpartFetch };
 
-/* ----------------------------- Kategorier ----------------------------- */
+/* ----------------------------- Kategorier (oförändrat) ----------------------------- */
+
+function normalizeCategory(raw: any): BritpartCategoryResponse {
+  const obj = raw?.items ?? raw ?? {};
+  const normSubcats: BritpartCategoryResponse["subcategories"] =
+    Array.isArray(obj.subcategories)
+      ? obj.subcategories.map((s: any) => ({
+          id: Number(s?.id),
+          title: s?.title,
+          partCodes: Array.isArray(s?.partCodes) ? s.partCodes : undefined,
+          subcategoryIds: Array.isArray(s?.subcategoryIds)
+            ? s?.subcategoryIds.map((n: any) => Number(n))
+            : undefined,
+        }))
+      : undefined;
+
+  return {
+    id: Number(obj?.id),
+    title: obj?.title,
+    url: obj?.url,
+    partCodes: Array.isArray(obj?.partCodes) ? obj.partCodes : undefined,
+    subcategoryIds: Array.isArray(obj?.subcategoryIds)
+      ? obj?.subcategoryIds.map((n: any) => Number(n))
+      : undefined,
+    subcategories: normSubcats,
+  };
+}
 
 export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
   const tryOne = async (param: "id" | "categoryId") => {
@@ -129,11 +155,7 @@ export async function getCategory(categoryId: number): Promise<BritpartCategoryR
     const json = await safeJson(res);
     return normalizeCategory(json);
   };
-  try {
-    return await tryOne("id");
-  } catch {
-    return await tryOne("categoryId");
-  }
+  try { return await tryOne("id"); } catch { return await tryOne("categoryId"); }
 }
 
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
@@ -152,44 +174,33 @@ export async function getDirectSubcategories(
 const catCache = new Map<number, BritpartCategoryResponse>();
 
 async function collectPartCodesFrom(
-  catId: number,
-  seen: Set<number>,
-  depth: number = 0
+  catId: number, seen: Set<number>, depth = 0
 ): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
   if (depth > 12) return [];
 
   let cat = catCache.get(catId);
-  if (!cat) {
-    cat = await getCategory(catId);
-    catCache.set(catId, cat);
-  }
+  if (!cat) { cat = await getCategory(catId); catCache.set(catId, cat); }
 
   const out: string[] = [];
+  if (Array.isArray(cat.partCodes)) out.push(...cat.partCodes);
 
-  if (Array.isArray(cat.partCodes) && cat.partCodes.length) out.push(...cat.partCodes);
-
-  if (Array.isArray(cat.subcategories) && cat.subcategories.length) {
+  if (Array.isArray(cat.subcategories)) {
     for (const sc of cat.subcategories) {
-      if (Array.isArray(sc.partCodes) && sc.partCodes.length) out.push(...sc.partCodes);
-
-      const innerFromChild = await collectPartCodesFrom(Number(sc.id), seen, depth + 1);
-      out.push(...innerFromChild);
-
-      if (Array.isArray(sc.subcategoryIds) && sc.subcategoryIds.length) {
+      if (Array.isArray(sc.partCodes)) out.push(...sc.partCodes);
+      out.push(...await collectPartCodesFrom(Number(sc.id), seen, depth + 1));
+      if (Array.isArray(sc.subcategoryIds)) {
         for (const subId of sc.subcategoryIds) {
-          const inner = await collectPartCodesFrom(Number(subId), seen, depth + 1);
-          out.push(...inner);
+          out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
         }
       }
     }
   }
 
-  if (Array.isArray(cat.subcategoryIds) && cat.subcategoryIds.length) {
+  if (Array.isArray(cat.subcategoryIds)) {
     for (const subId of cat.subcategoryIds) {
-      const inner = await collectPartCodesFrom(Number(subId), seen, depth + 1);
-      out.push(...inner);
+      out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
     }
   }
 
@@ -199,14 +210,57 @@ async function collectPartCodesFrom(
 export async function britpartGetPartCodesForCategories(categoryIds: number[]): Promise<string[]> {
   const seen = new Set<number>();
   const all: string[] = [];
-  for (const id of categoryIds) {
-    const codes = await collectPartCodesFrom(Number(id), seen, 0);
-    all.push(...codes);
-  }
+  for (const id of categoryIds) all.push(...await collectPartCodesFrom(Number(id), seen, 0));
   return Array.from(new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0)));
 }
 
-/* ----------------------------- Titel & bild per SKU ----------------------------- */
+/* ----------------------------- GET /part/getall ----------------------------- */
+
+/** GetAll enligt dokumentationen (code = exakt part code / sök) */
+export async function britpartGetAll(params: {
+  page?: number;
+  code?: string;                    // exakt SKU (kan vara “sök” hos Britpart)
+  modifiedSince?: string | Date;    // ISO 8601
+}): Promise<GetAllResponse> {
+  const usp = new URLSearchParams();
+  if (params.page) usp.set("page", String(params.page));
+  if (params.code) usp.set("code", String(params.code));
+  if (params.modifiedSince) {
+    const iso = typeof params.modifiedSince === "string"
+      ? params.modifiedSince
+      : (params.modifiedSince as Date).toISOString();
+    usp.set("modifiedSince", iso);
+  }
+  // token via header; (de accepterar även query-param, men header är redan satt)
+  const res = await britpartFetchRaw(`/part/getall?${usp.toString()}`);
+  return safeJson<GetAllResponse>(res);
+}
+
+/** Hämta titel/bild/description för EN SKU via GetAll, med fallback. */
+async function basicFromGetAll(code: string): Promise<BritpartBasic> {
+  try {
+    const r = await britpartGetAll({ code });        // filtrerat på SKU
+    const part = (r?.parts || []).find(p => (p.code || "").toLowerCase() === code.toLowerCase())
+      || (r?.parts || [])[0];
+
+    if (part) {
+      const html = [part.content || "", part.subText || ""].filter(Boolean).join("\n");
+      const img = Array.isArray(part.imageUrls) && part.imageUrls.length ? part.imageUrls[0] : undefined;
+      return {
+        sku: code,
+        title: part.title || code,
+        description: html || undefined,
+        imageUrl: img,
+        imageSource: img ? "getall.imageUrls[0]" : "none",
+      };
+    }
+  } catch {
+    // fall through to scraping fallback nedan
+  }
+  return await basicFromFallback(code);
+}
+
+/* ----------------------------- Fallback: publik sida (og:image m.m.) ----------------------------- */
 
 async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
   try {
@@ -223,80 +277,42 @@ async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
       return re.exec(html)?.[1];
     };
 
-    // Fler källor än bara og:image
-    const title = meta("og:title") || meta("twitter:title", "name");
-    const img =
-      meta("og:image") ||
-      meta("twitter:image", "name") ||
-      link("image_src") ||
-      // sista utväg: första <img ... src="...">
-      (/<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] ?? undefined);
+    const title = meta("og:title") || meta("twitter:title", "name") || undefined;
+    const candidates: (string | undefined)[] = [
+      meta("og:image"),
+      meta("twitter:image", "name"),
+      link("image_src"),
+      (/<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] ?? undefined),
+    ];
 
-    return {
-      title: title || undefined,
-      imageUrl: toAbs(img),
-    };
+    const first = candidates.find(Boolean);
+    return { title, imageUrl: toAbs(first) };
   } catch {
     return {};
   }
 }
 
-/** Prova API:er, annars några vanliga URL-mönster + og:image */
-async function getOneBasicForSku(sku: string): Promise<BritpartBasic> {
-  // 1) API-försök
-  const candidates = [
-    `/part/getproduct?code=${encodeURIComponent(sku)}`,
-    `/part/get?code=${encodeURIComponent(sku)}`,
-  ];
-
-  for (const path of candidates) {
-    try {
-      const res = await britpartFetchRaw(path);
-      if (!res.ok) continue;
-      const data = await (res.json() as Promise<any>).catch(() => null);
-      if (!data) continue;
-
-      const obj = data.items ?? data;
-      const title = obj?.title ?? obj?.name ?? undefined;
-      const imageUrlAbs = toAbs(
-        obj?.imageUrl ??
-          obj?.image?.url ??
-          obj?.images?.[0]?.url ??
-          obj?.media?.[0]?.src ??
-          undefined
-      );
-      const description = obj?.description ?? undefined;
-
-      if (title || imageUrlAbs || description) {
-        return { sku, title, description, imageUrl: imageUrlAbs };
-      }
-    } catch {
-      // prova nästa
-    }
-  }
-
-  // 2) Publika sidor – testa flera mönster
+async function basicFromFallback(sku: string): Promise<BritpartBasic> {
   const pages = [
     `${BRITPART_BASE}/parts/product/${encodeURIComponent(sku)}`,
     `${BRITPART_BASE}/product/${encodeURIComponent(sku)}`,
     `${BRITPART_BASE}/parts/${encodeURIComponent(sku)}`,
     `${BRITPART_BASE}/products/${encodeURIComponent(sku)}`,
   ];
-
   for (const u of pages) {
     const meta = await fetchOgMeta(u);
     if (meta.imageUrl || meta.title) {
-      return { sku, title: meta.title ?? sku, imageUrl: meta.imageUrl };
+      return { sku, title: meta.title ?? sku, imageUrl: meta.imageUrl, imageSource: meta.imageUrl ? "og:image" : "none" };
     }
   }
-
-  // 3) Inget hittades
-  return { sku, title: sku };
+  return { sku, title: sku, imageSource: "none" };
 }
+
+/* ----------------------------- Publik multi-funktion ----------------------------- */
 
 export async function britpartGetBasicForSkus(
   skus: string[],
-  concurrency = 8
+  concurrency = 10
 ): Promise<Record<string, BritpartBasic>> {
   const map: Record<string, BritpartBasic> = {};
   let i = 0;
@@ -306,9 +322,10 @@ export async function britpartGetBasicForSkus(
       const idx = i++;
       const sku = skus[idx];
       try {
-        map[sku] = await getOneBasicForSku(sku);
+        // Försök GetAll först, fallback om inget
+        map[sku] = await basicFromGetAll(sku);
       } catch {
-        map[sku] = { sku };
+        map[sku] = { sku, title: sku, imageSource: "none" };
       }
     }
   }
@@ -316,7 +333,6 @@ export async function britpartGetBasicForSkus(
   await Promise.all(
     Array.from({ length: Math.min(concurrency, Math.max(1, skus.length)) }, worker)
   );
-
   return map;
 }
 

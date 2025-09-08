@@ -1,3 +1,4 @@
+// api/import-probe/index.ts
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { britpartGetBasicForSkus } from "../shared/britpart";
 import { wcFindProductIdBySku, wcGetJSON, wcPostJSON, wcPutJSON } from "../shared/wc";
@@ -27,11 +28,13 @@ app.http("import-probe", {
         return { status: 400, headers: CORS, jsonBody: { ok: false, error: "Missing sku" } };
       }
 
+      // Hämta basinfo via GetAll-first (shared/britpart)
       const basics = await britpartGetBasicForSkus([sku]);
       const b = basics[sku] || {};
       const chosenImage = overrideUrl || b.imageUrl;
       const validImage = isHttpUrl(chosenImage);
 
+      // Se till att produkten finns
       let productId = await wcFindProductIdBySku(sku);
       let created = false;
       if (!productId) {
@@ -40,12 +43,23 @@ app.http("import-probe", {
           sku,
           status: "draft",
           type: "simple",
+          meta_data: [
+            ...(b.imageUrl ? [{ key: "_lr_source_image_url", value: b.imageUrl }] : []),
+            ...(b["imageSource"] ? [{ key: "_lr_source", value: b["imageSource"] }] : []),
+          ],
         });
         productId = r.id;
         created = true;
       }
 
-      const payload: any = { name: b.title || sku };
+      // Uppdatera bild/namn/beskrivning + meta
+      const payload: any = {
+        name: b.title || sku,
+        meta_data: [
+          ...(b.imageUrl ? [{ key: "_lr_source_image_url", value: b.imageUrl }] : []),
+          ...(b["imageSource"] ? [{ key: "_lr_source", value: b["imageSource"] }] : []),
+        ],
+      };
       if (b.description) {
         payload.description = b.description;
         payload.short_description = b.description;
@@ -55,8 +69,10 @@ app.http("import-probe", {
       }
 
       await wcPutJSON(`/products/${productId}`, payload);
+
+      // Läs tillbaka för verifikation
       const after = await wcGetJSON<any>(
-        `/products/${productId}?_fields=id,name,images,description,short_description`
+        `/products/${productId}?_fields=id,name,images,description,short_description,meta_data`
       );
 
       return {
@@ -71,6 +87,7 @@ app.http("import-probe", {
           validImage,
           imageCount: Array.isArray(after.images) ? after.images.length : 0,
           firstImage: after.images?.[0]?.src || null,
+          imageSource: b["imageSource"] || null,
           after,
         },
       };
