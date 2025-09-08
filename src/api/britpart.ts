@@ -15,7 +15,7 @@ export async function runImport(payload: ImportPayload) {
 
   const text = await res.text();
   let json: any = null;
-  try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+  try { json = text ? JSON.parse(text) : null; } catch { /* ignore parse */ }
 
   if (!res.ok) {
     const where = json?.where || "unknown";

@@ -44,7 +44,7 @@ async function createProductsSafe(items: WooCreate[], ctx: InvocationContext) {
       }
       created += arr.length;
     } catch (e: any) {
-      // Fallback: per produkt – och vid SKU-krock hämtar vi id:et
+      // Fallback: per produkt – och vid SKU-krock hämtar vi ID för att undvika dubblett
       ctx.warn?.(`Batch create fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
       for (const p of chunk) {
         try {
@@ -54,7 +54,6 @@ async function createProductsSafe(items: WooCreate[], ctx: InvocationContext) {
             if (single.sku) idsBySku[single.sku] = Number(single.id);
           }
         } catch (ee: any) {
-          // Om Woo säger "SKU already exists", hämta id för att undvika dubblett
           const text = emsg(ee);
           if (/sku/i.test(text) && /exist/i.test(text)) {
             const id = await wcFindProductIdBySku(p.sku);
@@ -161,7 +160,7 @@ app.http("import-run", {
           status: "draft",
           description: b.description,
           short_description: b.description,
-          images: validImage(b.imageUrl) ? [{ src: b.imageUrl! }] : undefined,
+          images: validImage(b.imageUrl) ? [{ src: b.imageUrl!, position: 0 }] : undefined,
         };
       });
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
@@ -187,9 +186,8 @@ app.http("import-run", {
         }
 
         if (validImage(b.imageUrl)) {
-          u.images = [{ src: b.imageUrl! }];
+          u.images = [{ src: b.imageUrl!, position: 0 }];
         } else if (b.imageUrl) {
-          // fanns en URL men den såg inte vettig ut → räkna som ogiltig
           invalidImageUrls++;
         }
 
