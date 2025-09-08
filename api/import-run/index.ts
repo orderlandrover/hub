@@ -1,6 +1,15 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartGetPartCodesForCategories, britpartGetBasicForSkus } from "../shared/britpart";
-import { wcBatchCreateProducts, wcBatchUpdateProducts, wcFindProductIdBySku, WooCreate, WooUpdate } from "../shared/wc";
+import {
+  britpartGetPartCodesForCategories,
+  britpartGetBasicForSkus,
+} from "../shared/britpart";
+import {
+  wcBatchCreateProducts,
+  wcBatchUpdateProducts,
+  wcFindProductIdBySku,
+  WooCreate,
+  WooUpdate,
+} from "../shared/wc";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -8,7 +17,8 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
 
-function msg(e: any) { return e?.message || String(e); }
+const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s);
+const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
 app.http("import-run", {
   route: "import-run",
@@ -21,22 +31,22 @@ app.http("import-run", {
     try {
       const { ids } = (await req.json()) as { ids: number[] };
       if (!Array.isArray(ids) || !ids.length) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
+        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "No ids" } };
       }
 
-      // A) Lista SKU
+      // A) Hämta alla SKU (partCodes) under valda kategorier
       where = "collect-skus";
       const partCodes = await britpartGetPartCodesForCategories(ids);
       const skus = Array.from(new Set(partCodes.map(String)));
       ctx.log?.(`collect-skus: ${skus.length}`);
 
-      // B) Hämta titel/bild
+      // B) Hämta titel/bild för alla
       where = "fetch-basics";
       const basics = await britpartGetBasicForSkus(skus);
-      const haveImages = Object.values(basics).filter(b => b.imageUrl).length;
-      ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, withImages=${haveImages}`);
+      const haveImg = Object.values(basics).filter(b => isHttpUrl(b.imageUrl)).length;
+      ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, withImg=${haveImg}`);
 
-      // C) Kolla vilka som redan finns i Woo
+      // C) Kolla vilka som redan finns i Woo (begränsad samtidighet)
       where = "lookup-existing";
       const existing = new Map<string, number>();
       {
@@ -49,7 +59,7 @@ app.http("import-run", {
               const id = await wcFindProductIdBySku(sku);
               if (id) existing.set(sku, id);
             } catch (e) {
-              ctx.warn?.(`lookup fail ${sku}: ${msg(e)}`);
+              ctx.warn?.(`lookup fail ${sku}: ${emsg(e)}`);
             }
           }
         }
@@ -57,23 +67,23 @@ app.http("import-run", {
       }
       ctx.log?.(`lookup-existing: exists=${existing.size}`);
 
-      // D) Skapa saknade
+      // D) Skapa saknade (med bild om URL ser giltig ut)
       where = "create";
       const toCreate = skus.filter(s => !existing.has(s));
       const createPayloads: WooCreate[] = toCreate.map(sku => {
         const b = basics[sku] || {};
         return {
-          name: b.title || sku,
+          name: (b.title && b.title.trim()) || sku,
           sku,
           type: "simple",
           status: "draft",
-          images: b.imageUrl ? [{ src: b.imageUrl }] : undefined,
+          images: isHttpUrl(b.imageUrl) ? [{ src: b.imageUrl! }] : undefined,
         };
       });
       const { count: created, idsBySku } = await wcBatchCreateProducts(createPayloads);
       ctx.log?.(`create: requested=${toCreate.length}, created=${created}`);
 
-      // E) Uppdatera namn/bild på alla (befintliga + nyskapade) om vi har något nytt
+      // E) Uppdatera namn/bild på alla som har något nytt
       where = "update";
       const updates: WooUpdate[] = [];
       for (const sku of skus) {
@@ -81,10 +91,9 @@ app.http("import-run", {
         if (!id) continue;
         const b = basics[sku];
         if (!b) continue;
-
         const u: WooUpdate = { id };
         if (b.title) u.name = b.title;
-        if (b.imageUrl) u.images = [{ src: b.imageUrl }];
+        if (isHttpUrl(b.imageUrl)) u.images = [{ src: b.imageUrl! }];
         if (u.name || u.images) updates.push(u);
       }
       const updated = await wcBatchUpdateProducts(updates);
@@ -101,12 +110,12 @@ app.http("import-run", {
           exists: existing.size,
           created,
           updatedWithImagesOrName: updated,
-          samples: skus.slice(0, 10),
+          sampleSkus: skus.slice(0, 10),
         },
       };
     } catch (e: any) {
       ctx.error?.(e);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: msg(e) } };
+      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: emsg(e) } };
     }
   },
 });

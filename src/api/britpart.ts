@@ -1,9 +1,9 @@
 // src/api/britpart.ts
 export type ImportPayload = {
-  ids: number[];                                  // valda Britpart-kategori-ID:n
-  pageSize?: number;                              // t.ex. 200 (backend kan ignorera)
+  ids: number[];
+  pageSize?: number;
   roundingMode?: "none" | "nearest" | "up" | "down";
-  roundTo?: number;                               // t.ex. 1 eller 5
+  roundTo?: number;
 };
 
 export async function runImport(payload: ImportPayload) {
@@ -12,6 +12,15 @@ export async function runImport(payload: ImportPayload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => "")}`);
-  return res.json();
+
+  const text = await res.text();
+  let json: any = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+
+  if (!res.ok) {
+    const where = json?.where || "unknown";
+    const err = json?.error || text || "Unknown backend error";
+    throw new Error(`HTTP ${res.status} [${where}]: ${err}`);
+  }
+  return json ?? {};
 }
