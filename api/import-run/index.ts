@@ -25,25 +25,19 @@ const CORS = {
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s || "");
-/** Godkänn alla http(s)-bilder – Woo sideloadar ändå till medialibrary */
+/** Woo sideloadar själv → http(s) räcker som valid bildkälla */
 const validImage = (url?: string) => isHttpUrl(url);
 
-/** Kanonisk bild-URL (utan query) för att undvika onödig “resideload” */
+/** Kanonisk bild-URL (utan query) för att känna igen samma källa mellan körningar */
 const canon = (u?: string) => {
   if (!u) return null;
-  try {
-    const x = new URL(u);
-    return `${x.origin}${x.pathname}`;
-  } catch {
-    return null;
-  }
+  try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return null; }
 };
 
 /* --------------------------------------------------------------- */
 /* Batch helpers (med fallback per item)                           */
 /* --------------------------------------------------------------- */
 
-/** Skapa i chunkar; vid fel: fallback per produkt, och hantera SKU-krock */
 async function createProductsSafe(items: any[], ctx: InvocationContext) {
   let created = 0;
   const idsBySku: Record<string, number> = {};
@@ -57,9 +51,7 @@ async function createProductsSafe(items: any[], ctx: InvocationContext) {
         { create: chunk }
       );
       const arr = Array.isArray(res.create) ? res.create : [];
-      for (const c of arr) {
-        if (c?.id && c?.sku) idsBySku[c.sku] = Number(c.id);
-      }
+      for (const c of arr) if (c?.id && c?.sku) idsBySku[c.sku] = Number(c.id);
       created += arr.length;
     } catch (e: any) {
       ctx.warn?.(`Batch create fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
@@ -72,13 +64,9 @@ async function createProductsSafe(items: any[], ctx: InvocationContext) {
           }
         } catch (ee: any) {
           const text = emsg(ee);
-          // Woo säger att SKU finns → hämta ID och fortsätt
           if (/sku/i.test(text) && /exist/i.test(text)) {
             const id = await wcFindProductIdBySku(p.sku);
-            if (id) {
-              idsBySku[p.sku] = id;
-              continue;
-            }
+            if (id) { idsBySku[p.sku] = id; continue; }
           }
           failedSkus.push(p.sku);
           ctx.warn?.(`Create fail ${p.sku}: ${text}`);
@@ -86,11 +74,9 @@ async function createProductsSafe(items: any[], ctx: InvocationContext) {
       }
     }
   }
-
   return { created, idsBySku, failedSkus };
 }
 
-/** Uppdatera i chunkar; vid fel: fallback per produkt */
 async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) {
   let updated = 0;
   const failedIds: number[] = [];
@@ -98,20 +84,13 @@ async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) 
   for (let i = 0; i < updates.length; i += 80) {
     const chunk = updates.slice(i, i + 80);
     try {
-      const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, {
-        update: chunk,
-      });
+      const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, { update: chunk });
       updated += Array.isArray(res.update) ? res.update.length : 0;
     } catch (e: any) {
       ctx.warn?.(`Batch update fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
       for (const u of chunk) {
-        try {
-          await wcPutJSON(`/products/${u.id}`, u);
-          updated++;
-        } catch (ee: any) {
-          failedIds.push(u.id);
-          ctx.warn?.(`Update fail id=${u.id}: ${emsg(ee)}`);
-        }
+        try { await wcPutJSON(`/products/${u.id}`, u); updated++; }
+        catch (ee: any) { failedIds.push(u.id); ctx.warn?.(`Update fail id=${u.id}: ${emsg(ee)}`); }
       }
     }
   }
@@ -131,24 +110,31 @@ app.http("import-run", {
 
     let where = "start";
     try {
-      const { ids } = (await req.json()) as { ids: number[] };
+      const body = (await req.json()) as { ids: number[]; pageSize?: number };
+      const ids = body?.ids;
       if (!Array.isArray(ids) || ids.length === 0) {
         return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
       }
 
-      /* 1) Samla SKU (unika) */
-      where = "collect-skus";
-      const partCodes = await britpartGetPartCodesForCategories(ids);
-      const skus = Array.from(new Set(partCodes.map(String)));
-      ctx.log?.(`collect-skus: ${skus.length}`);
+      // Begränsa per körning (skydd mot timeout 500)
+      const PAGE_MAX = 500;
+      const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 200), PAGE_MAX));
 
-      /* 2) Basdata från Britpart (GetAll först, fallback i shared/britpart) */
+      /* 1) Samla SKU (unika) – rekursivt via kategorier och underkategorier */
+      where = "collect-skus";
+      const allPartCodes = await britpartGetPartCodesForCategories(ids);
+      const allSkus = Array.from(new Set(allPartCodes.map(String)));
+      const skus = allSkus.slice(0, pageSize);
+      const remainingSkus = Math.max(0, allSkus.length - skus.length);
+      ctx.log?.(`collect-skus: total=${allSkus.length}, pageSize=${pageSize}`);
+
+      /* 2) Basdata från Britpart (GetAll först) */
       where = "fetch-basics";
       const basics = await britpartGetBasicForSkus(skus);
       const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
       ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, validImages=${imgOkCount}`);
 
-      /* 3) Vilka produkter finns redan i Woo? */
+      /* 3) Finns redan i Woo? */
       where = "lookup-existing";
       const existing = new Map<string, number>();
       {
@@ -168,12 +154,11 @@ app.http("import-run", {
         }
         await Promise.all(Array.from({ length: conc }, worker));
       }
-      ctx.log?.(`lookup-existing: exists=${existing.size}`);
+      ctx.log?.(`lookup-existing: exists=${existing.size} / page=${skus.length}`);
 
-      /* 4) Skapa saknade (draft) – med bild/namn/beskrivning + meta om vi har det */
+      /* 4) Skapa saknade (draft) – sätt bild + meta om vi har det */
       where = "create";
       const toCreateSkus = skus.filter((s) => !existing.has(s));
-
       const createPayloads: any[] = toCreateSkus.map((sku) => {
         const b = basics[sku] || {};
         const c = canon(b.imageUrl);
@@ -191,48 +176,35 @@ app.http("import-run", {
           short_description: b.description,
           meta_data: meta.length ? meta : undefined,
         };
-
-        if (validImage(b.imageUrl)) {
-          payload.images = [{ src: b.imageUrl, position: 0 }];
-        }
-
+        if (validImage(b.imageUrl)) payload.images = [{ src: b.imageUrl, position: 0 }];
         return payload;
       });
 
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
       ctx.log?.(`create: requested=${toCreateSkus.length}, created=${created}, failed=${failedSkus.length}`);
 
-      /* 4.5) Läs befintlig canon-meta för existerande produkter (för att undvika “resideload”) */
+      /* 4.5) Läs befintlig canon-meta för existerande produkter (för att undvika resideload) */
       where = "prefetch-existing-meta";
-      const existingById: number[] = [];
-      for (const sku of skus) {
-        const id = existing.get(sku);
-        if (id) existingById.push(id);
-      }
-
+      const existingById = Array.from(existing.values());
       const existingMetaById = new Map<number, { canon?: string }>();
       {
         let i = 0;
         const conc = 8;
         async function worker() {
           while (i < existingById.length) {
-            const idx = i++;
-            const pid = existingById[idx];
+            const pid = existingById[i++];
             try {
               const prod = await wcGetJSON<any>(`/products/${pid}?_fields=id,meta_data`);
               const meta = Array.isArray(prod?.meta_data) ? prod.meta_data : [];
               const canonMeta = meta.find((m: any) => m?.key === "_lr_source_image_canon")?.value;
               existingMetaById.set(pid, { canon: typeof canonMeta === "string" ? canonMeta : undefined });
-            } catch {
-              // ignorerar enstaka fel
-            }
+            } catch { /* ignore */ }
           }
         }
         await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, existingById.length)) }, worker));
       }
 
-      /* 5) Uppdatera namn/bild/beskrivning på redan existerande produkter
-            (hoppa över de som skapades nyss för att undvika dubbla sideloads) */
+      /* 5) Uppdatera existerande (skippa de som skapats i samma körning) */
       where = "update";
       const updates: WooUpdate[] = [];
       let invalidImageUrls = 0;
@@ -243,23 +215,18 @@ app.http("import-run", {
         const id = idExisting ?? idCreated;
         if (!id) continue;
 
-        const b = basics[sku];
-        if (!b) continue;
-
-        // Skippa uppdatering för de som skapades i samma körning (vi satte redan allt i create)
+        const b = basics[sku]; if (!b) continue;
         const wasCreatedNow = !!idCreated && !idExisting;
+
         const u: WooUpdate = { id };
 
-        // Namn/description kan vi uppdatera även på existerande
+        // Namn/beskrivning – bra även för existerande, men onödigt direkt efter create
         if (!wasCreatedNow) {
           if (b.title) u.name = b.title;
-          if (b.description) {
-            u.description = b.description;
-            u.short_description = b.description;
-          }
+          if (b.description) { u.description = b.description; u.short_description = b.description; }
         }
 
-        // Bildlogik – endast för existerande (eller om create saknade bild)
+        // Bild – undvik resideload om canon inte ändrats
         if (!wasCreatedNow) {
           const newCanon = canon(b.imageUrl);
           const prevCanon = existingMetaById.get(id)?.canon;
@@ -276,13 +243,7 @@ app.http("import-run", {
           }
         }
 
-        if (
-          u.name ||
-          u.images ||
-          u.description ||
-          u.short_description ||
-          (u as any).meta_data
-        ) {
+        if (u.name || u.images || u.description || u.short_description || (u as any).meta_data) {
           updates.push(u);
         }
       }
@@ -290,7 +251,7 @@ app.http("import-run", {
       const { updated, failedIds } = await updateProductsSafe(updates, ctx);
       ctx.log?.(`update: candidates=${updates.length}, updated=${updated}, failed=${failedIds.length}`);
 
-      /* 6) Svar */
+      /* 6) Svar (med pagination-info) */
       return {
         status: 200,
         headers: CORS,
@@ -298,7 +259,11 @@ app.http("import-run", {
           ok: true,
           where: "done",
           selectedCategoryIds: ids,
-          totalSkus: skus.length,
+          pageSize,
+          processedSkus: skus.length,
+          totalSkus: allSkus.length,
+          remainingSkus,
+          hasMore: remainingSkus > 0,
           exists: existing.size,
           created,
           updatedWithMeta: updated,
@@ -309,8 +274,8 @@ app.http("import-run", {
         },
       };
     } catch (e: any) {
-      ctx.error?.(e);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: emsg(e) } };
+      const msg = emsg(e);
+      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: msg } };
     }
   },
 });
