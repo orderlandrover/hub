@@ -20,11 +20,30 @@ export type WooStatus = "publish" | "draft" | "private" | "pending";
 
 export type WooUpdate = {
   id: number;
+  // pris / status / lager
   regular_price?: string;
   status?: WooStatus;
   manage_stock?: boolean;
   stock_quantity?: number | null;
   stock_status?: "instock" | "outofstock" | "onbackorder";
+  // metadata vi ofta vill uppdatera
+  name?: string;
+  description?: string;
+  short_description?: string;
+  categories?: { id: number }[];
+  images?: { src: string }[];      // <— stöd för bilder vid update
+};
+
+export type WooCreate = {
+  name: string;
+  sku: string;
+  type?: "simple" | "external" | "grouped" | "variable";
+  status?: WooStatus;              // "draft" är bra om pris saknas
+  regular_price?: string;
+  description?: string;
+  short_description?: string;
+  categories?: { id: number }[];
+  images?: { src: string }[];      // <— sätt bild direkt vid create
 };
 
 /* --------------------------------------------------------------- */
@@ -141,30 +160,25 @@ export async function wcBatchUpdateProducts(updates: WooUpdate[]): Promise<numbe
   return done;
 }
 
-export type WooCreate = {
-  name: string;
-  sku: string;
-  type?: "simple" | "external" | "grouped" | "variable";
-  status?: WooStatus; // "draft" är bra som default om pris saknas
-  regular_price?: string; // sätts om du har pris
-  description?: string;
-  short_description?: string;
-  categories?: { id: number }[];
-  images?: { src: string }[];
-};
-
-/** Batch-skapa produkter (max 100 / request). Returnerar antal skapade + deras IDs. */
-export async function wcBatchCreateProducts(items: WooCreate[]): Promise<{ count: number; ids: number[] }> {
-  if (!items.length) return { count: 0, ids: [] };
+/**
+ * Batch-skapa produkter (max 100 / request).
+ * Returnerar både antal och en map SKU → ID så att vi lätt kan uppdatera efter create.
+ */
+export async function wcBatchCreateProducts(
+  items: WooCreate[]
+): Promise<{ count: number; idsBySku: Record<string, number> }> {
+  if (!items.length) return { count: 0, idsBySku: {} };
 
   let count = 0;
-  const ids: number[] = [];
+  const idsBySku: Record<string, number> = {};
   for (let i = 0; i < items.length; i += 100) {
     const chunk = items.slice(i, i + 100);
-    const res = await wcPostJSON<{ create?: Array<{ id: number }> }>(`/products/batch`, { create: chunk });
+    const res = await wcPostJSON<{ create?: Array<{ id: number; sku?: string }> }>(`/products/batch`, { create: chunk });
     const created = Array.isArray(res.create) ? res.create : [];
     count += created.length;
-    for (const c of created) if (c?.id) ids.push(Number(c.id));
+    for (const c of created) {
+      if (c?.id && c?.sku) idsBySku[c.sku] = Number(c.id);
+    }
   }
-  return { count, ids };
+  return { count, idsBySku };
 }
