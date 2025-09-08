@@ -4,9 +4,9 @@ import {
   britpartGetBasicForSkus,
 } from "../shared/britpart";
 import {
-  wcBatchCreateProducts,
-  wcBatchUpdateProducts,
   wcFindProductIdBySku,
+  wcPostJSON,
+  wcPutJSON,
   WooCreate,
   WooUpdate,
 } from "../shared/wc";
@@ -17,8 +17,89 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
 
-const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s);
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
+const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s || "");
+const looksLikeImage = (s?: string) =>
+  !!s && /\.(jpe?g|png|gif|webp|bmp|tiff?)($|\?)/i.test(s);
+
+/** Vi tar bara med bilder som ser rimliga ut (minskar Woo 400-fel). */
+const validImage = (url?: string) => isHttpUrl(url) && looksLikeImage(url);
+
+/** Skapa i små chunkar. Vid fel: gå ner till per-produkt så resten inte drabbas. */
+async function createProductsSafe(items: WooCreate[], ctx: InvocationContext) {
+  let created = 0;
+  const idsBySku: Record<string, number> = {};
+  const failedSkus: string[] = [];
+
+  for (let i = 0; i < items.length; i += 40) {
+    const chunk = items.slice(i, i + 40);
+    try {
+      const res = await wcPostJSON<{ create?: Array<{ id: number; sku?: string }> }>(
+        `/products/batch`,
+        { create: chunk }
+      );
+      const arr = Array.isArray(res.create) ? res.create : [];
+      for (const c of arr) {
+        if (c?.id && c?.sku) idsBySku[c.sku] = Number(c.id);
+      }
+      created += arr.length;
+    } catch (e: any) {
+      // Fallback: per produkt – och vid SKU-krock hämtar vi id:et
+      ctx.warn?.(`Batch create fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
+      for (const p of chunk) {
+        try {
+          const single = await wcPostJSON<{ id: number; sku?: string }>(`/products`, p);
+          if (single?.id) {
+            created++;
+            if (single.sku) idsBySku[single.sku] = Number(single.id);
+          }
+        } catch (ee: any) {
+          // Om Woo säger "SKU already exists", hämta id för att undvika dubblett
+          const text = emsg(ee);
+          if (/sku/i.test(text) && /exist/i.test(text)) {
+            const id = await wcFindProductIdBySku(p.sku);
+            if (id) {
+              idsBySku[p.sku] = id;
+              continue;
+            }
+          }
+          failedSkus.push(p.sku);
+          ctx.warn?.(`Create fail ${p.sku}: ${text}`);
+        }
+      }
+    }
+  }
+
+  return { created, idsBySku, failedSkus };
+}
+
+/** Uppdatera i chunkar; vid fel faller vi ner till per-produkt. */
+async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) {
+  let updated = 0;
+  const failedIds: number[] = [];
+
+  for (let i = 0; i < updates.length; i += 80) {
+    const chunk = updates.slice(i, i + 80);
+    try {
+      const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, {
+        update: chunk,
+      });
+      updated += Array.isArray(res.update) ? res.update.length : 0;
+    } catch (e: any) {
+      ctx.warn?.(`Batch update fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
+      for (const u of chunk) {
+        try {
+          await wcPutJSON(`/products/${u.id}`, u);
+          updated++;
+        } catch (ee: any) {
+          failedIds.push(u.id);
+          ctx.warn?.(`Update fail id=${u.id}: ${emsg(ee)}`);
+        }
+      }
+    }
+  }
+  return { updated, failedIds };
+}
 
 app.http("import-run", {
   route: "import-run",
@@ -30,27 +111,28 @@ app.http("import-run", {
     let where = "start";
     try {
       const { ids } = (await req.json()) as { ids: number[] };
-      if (!Array.isArray(ids) || !ids.length) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "No ids" } };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
       }
 
-      // A) Hämta alla SKU (partCodes) under valda kategorier
+      // 1) Samla SKU (unika)
       where = "collect-skus";
       const partCodes = await britpartGetPartCodesForCategories(ids);
       const skus = Array.from(new Set(partCodes.map(String)));
       ctx.log?.(`collect-skus: ${skus.length}`);
 
-      // B) Hämta titel/bild för alla
+      // 2) Hämta titel/bild/beskrivning för alla SKU
       where = "fetch-basics";
       const basics = await britpartGetBasicForSkus(skus);
-      const haveImg = Object.values(basics).filter(b => isHttpUrl(b.imageUrl)).length;
-      ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, withImg=${haveImg}`);
+      const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
+      ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, validImages=${imgOkCount}`);
 
-      // C) Kolla vilka som redan finns i Woo (begränsad samtidighet)
+      // 3) Vilka finns redan i Woo?
       where = "lookup-existing";
       const existing = new Map<string, number>();
       {
-        let i = 0; const conc = 8;
+        let i = 0;
+        const conc = 10;
         async function worker() {
           while (i < skus.length) {
             const idx = i++;
@@ -67,38 +149,59 @@ app.http("import-run", {
       }
       ctx.log?.(`lookup-existing: exists=${existing.size}`);
 
-      // D) Skapa saknade (med bild om URL ser giltig ut)
+      // 4) Skapa saknade (draft, med bild/namn/beskrivning om vi har data)
       where = "create";
-      const toCreate = skus.filter(s => !existing.has(s));
-      const createPayloads: WooCreate[] = toCreate.map(sku => {
+      const toCreateSkus = skus.filter((s) => !existing.has(s));
+      const createPayloads: WooCreate[] = toCreateSkus.map((sku) => {
         const b = basics[sku] || {};
         return {
           name: (b.title && b.title.trim()) || sku,
           sku,
           type: "simple",
           status: "draft",
-          images: isHttpUrl(b.imageUrl) ? [{ src: b.imageUrl! }] : undefined,
+          description: b.description,
+          short_description: b.description,
+          images: validImage(b.imageUrl) ? [{ src: b.imageUrl! }] : undefined,
         };
       });
-      const { count: created, idsBySku } = await wcBatchCreateProducts(createPayloads);
-      ctx.log?.(`create: requested=${toCreate.length}, created=${created}`);
+      const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
+      ctx.log?.(`create: requested=${toCreateSkus.length}, created=${created}, failed=${failedSkus.length}`);
 
-      // E) Uppdatera namn/bild på alla som har något nytt
+      // 5) Uppdatera namn/bild/beskrivning på alla (befintliga + nyskapade)
       where = "update";
       const updates: WooUpdate[] = [];
+      let invalidImageUrls = 0;
+
       for (const sku of skus) {
         const id = existing.get(sku) ?? idsBySku[sku];
         if (!id) continue;
+
         const b = basics[sku];
         if (!b) continue;
+
         const u: WooUpdate = { id };
         if (b.title) u.name = b.title;
-        if (isHttpUrl(b.imageUrl)) u.images = [{ src: b.imageUrl! }];
-        if (u.name || u.images) updates.push(u);
-      }
-      const updated = await wcBatchUpdateProducts(updates);
-      ctx.log?.(`update: candidates=${updates.length}, updated=${updated}`);
+        if (b.description) {
+          u.description = b.description;
+          u.short_description = b.description;
+        }
 
+        if (validImage(b.imageUrl)) {
+          u.images = [{ src: b.imageUrl! }];
+        } else if (b.imageUrl) {
+          // fanns en URL men den såg inte vettig ut → räkna som ogiltig
+          invalidImageUrls++;
+        }
+
+        if (u.name || u.images || u.description || u.short_description) {
+          updates.push(u);
+        }
+      }
+
+      const { updated, failedIds } = await updateProductsSafe(updates, ctx);
+      ctx.log?.(`update: candidates=${updates.length}, updated=${updated}, failed=${failedIds.length}`);
+
+      // 6) Svar
       return {
         status: 200,
         headers: CORS,
@@ -109,7 +212,10 @@ app.http("import-run", {
           totalSkus: skus.length,
           exists: existing.size,
           created,
-          updatedWithImagesOrName: updated,
+          updatedWithMeta: updated,
+          invalidImageUrls,
+          createFailedSkus: failedSkus,
+          updateFailedIds: failedIds,
           sampleSkus: skus.slice(0, 10),
         },
       };
