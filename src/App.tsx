@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import SASPriceImport from "./features/britpart/SASPriceImport";
 import ProductsTab from "./features/products/ProductsTab";
+import { runImport } from "./api/britpart";
 
 /* ----------------------------- Typer ----------------------------- */
 type Subcategory = { id: number; title: string; parentId?: number };
@@ -44,6 +45,7 @@ function Button({
   };
   return (
     <button
+      type="button"
       disabled={disabled}
       onClick={onClick}
       className={classNames(
@@ -111,14 +113,12 @@ function SubcategorySelector({
         setSubcats(sorted);
       } catch (e) {
         console.error(e);
-        setSubcats([]); // fail safe
+        setSubcats([]);
       } finally {
         setLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
   const filtered = useMemo(() => {
@@ -149,8 +149,7 @@ function SubcategorySelector({
             className={classNames(
               "flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer border transition",
               selected.includes(sc.id) ? "bg-indigo-50 border-indigo-300" : "bg-white hover:bg-gray-50 border-gray-200"
-            )}
-          >
+            )}>
             <input
               type="checkbox"
               checked={selected.includes(sc.id)}
@@ -239,15 +238,39 @@ function WooCategoriesPanel() {
 /* --------------------------------- APP --------------------------------- */
 const TABS = [
   { key: "import", label: "Importera Britpart" },
-  { key: "excel", label: "Avancerad import" }, // SAS/Blob
+  { key: "excel", label: "Avancerad import" },
   { key: "categories", label: "Woo-kategorier" },
-  { key: "logs", label: "Produkter" }, // visar vår ProductsTab under fliken "Produkter"
+  { key: "logs", label: "Produkter" },
 ] as const;
 type TabKey = typeof TABS[number]["key"];
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>("import");
   const [selected, setSelected] = useState<number[]>([]);
+
+  // nya states för formuläret
+  const [perPage, setPerPage] = useState<number>(200);
+  const [roundingMode, setRoundingMode] = useState<"none" | "nearest" | "up" | "down">("none");
+  const [roundTo, setRoundTo] = useState<number>(1);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const handleImport = async () => {
+    const ids = selected;
+    console.log("Import click", ids);
+    if (!ids.length) return;
+
+    try {
+      setIsImporting(true);
+      const res = await runImport({ ids, pageSize: perPage, roundingMode, roundTo });
+      console.log("Import OK", res);
+      alert(`Import klar. Kategorier: ${ids.length}, blad: ${res.leafIds?.length ?? "okänt"}`);
+    } catch (e: any) {
+      console.error("Import fail", e);
+      alert(e?.message || String(e));
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -290,12 +313,22 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
                 <label className="block text-sm font-medium mb-1">Per sida vid hämtning</label>
-                <input className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" defaultValue={200} />
-                <p className="text-xs text-gray-500 mt-1">Backend bör paginera tills allt är hämtat.</p>
+                <input
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+                  type="number"
+                  min={10}
+                  value={perPage}
+                  onChange={(e) => setPerPage(Math.max(10, Number(e.target.value) || 200))}
+                />
+                <p className="text-xs text-gray-500 mt-1">Backend paginerar tills allt är hämtat.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Avrundningsläge</label>
-                <select className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" defaultValue="none">
+                <select
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+                  value={roundingMode}
+                  onChange={(e) => setRoundingMode(e.target.value as any)}
+                >
                   <option value="none">Ingen</option>
                   <option value="nearest">Närmaste</option>
                   <option value="up">Uppåt</option>
@@ -304,12 +337,20 @@ export default function App() {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Avrunda till</label>
-                <input className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" type="number" min={1} defaultValue={1} />
+                <input
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+                  type="number"
+                  min={1}
+                  value={roundTo}
+                  onChange={(e) => setRoundTo(Math.max(1, Number(e.target.value) || 1))}
+                />
                 <p className="text-xs text-gray-500 mt-1">Ex: 1 = hela kr, 5 = femkronorssteg.</p>
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <Button disabled={!selected.length}>Importera {selected.length} valda</Button>
+              <Button onClick={handleImport} disabled={!selected.length || isImporting}>
+                {isImporting ? "Importerar…" : `Importera ${selected.length} valda`}
+              </Button>
               <Badge>ID: {selected.join(", ") || "–"}</Badge>
             </div>
           </Section>
