@@ -1,17 +1,10 @@
-// api/shared/britpart.ts
 import { env } from "./env";
 
-/**
- * ENV:
- *  - BRITPART_BASE  (ex: https://www.britpart.com) – ingen slash på slutet
- *  - BRITPART_TOKEN (API-nyckel)
- */
+/** Bas och token */
 const BRITPART_BASE = (env.BRITPART_BASE || "").replace(/\/+$/, "");
 const BRITPART_TOKEN = env.BRITPART_TOKEN || "";
 
-/* ------------------------------------------------------------------ */
-/* Typer                                                               */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Typer ----------------------------- */
 
 export type BritpartCategoryResponse = {
   id: number;
@@ -34,9 +27,7 @@ export type BritpartBasic = {
   imageUrl?: string;
 };
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Helpers ----------------------------- */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,6 +43,16 @@ async function safeJson<T = any>(res: Response): Promise<T> {
     return JSON.parse(txt) as T;
   } catch {
     throw new Error(`Britpart JSON parse error ${res.status}: ${txt.slice(0, 300)}`);
+  }
+}
+
+function toAbs(u?: string): string | undefined {
+  if (!u) return undefined;
+  try {
+    // Gör relativa länkar absoluta utifrån BRITPART_BASE
+    return new URL(u, BRITPART_BASE).toString();
+  } catch {
+    return undefined;
   }
 }
 
@@ -82,9 +83,7 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Lågnivå fetch (Token-header + backoff)                              */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Fetch ----------------------------- */
 
 async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   ensureBaseConfigured();
@@ -119,14 +118,11 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
   throw lastErr ?? new Error("Britpart call failed");
 }
 
-// Bakåtkompatibelt exportnamn om andra functions importerar detta
+// Exportnamn som andra moduler använder
 export { britpartFetchRaw as britpartFetch };
 
-/* ------------------------------------------------------------------ */
-/* Kategorier                                                          */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Kategorier ----------------------------- */
 
-/** Prova först ?id=, sedan ?categoryId= (olika miljöer förväntar olika) */
 export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
   const tryOne = async (param: "id" | "categoryId") => {
     const res = await britpartFetchRaw(`/part/getcategories?${param}=${Number(categoryId)}`);
@@ -140,7 +136,6 @@ export async function getCategory(categoryId: number): Promise<BritpartCategoryR
   }
 }
 
-/** Roten (3 = All Parts) */
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
   return getCategory(3);
 }
@@ -152,9 +147,7 @@ export async function getDirectSubcategories(
   return parent.subcategories ?? [];
 }
 
-/* ------------------------------------------------------------------ */
-/* Rekursiv traversal för partCodes                                    */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Part codes (rekursivt) ----------------------------- */
 
 const catCache = new Map<number, BritpartCategoryResponse>();
 
@@ -213,9 +206,7 @@ export async function britpartGetPartCodesForCategories(categoryIds: number[]): 
   return Array.from(new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0)));
 }
 
-/* ------------------------------------------------------------------ */
-/* Titel & bild per SKU (API → fallback: og:image)                     */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Titel & bild per SKU ----------------------------- */
 
 async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
   try {
@@ -223,22 +214,36 @@ async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
     if (!res.ok) return {};
     const html = await res.text();
 
-    const find = (prop: string) => {
-      const re = new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i");
+    const meta = (prop: string, attr = "property") => {
+      const re = new RegExp(`<meta[^>]+${attr}=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i");
+      return re.exec(html)?.[1];
+    };
+    const link = (rel: string) => {
+      const re = new RegExp(`<link[^>]+rel=["']${rel}["'][^>]+href=["']([^"']+)["']`, "i");
       return re.exec(html)?.[1];
     };
 
+    // Fler källor än bara og:image
+    const title = meta("og:title") || meta("twitter:title", "name");
+    const img =
+      meta("og:image") ||
+      meta("twitter:image", "name") ||
+      link("image_src") ||
+      // sista utväg: första <img ... src="...">
+      (/<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] ?? undefined);
+
     return {
-      title: find("og:title"),
-      imageUrl: find("og:image"),
+      title: title || undefined,
+      imageUrl: toAbs(img),
     };
   } catch {
     return {};
   }
 }
 
-/** Prova kända API-endpoints; om de inte finns → använd produktsidans og:image */
+/** Prova API:er, annars några vanliga URL-mönster + og:image */
 async function getOneBasicForSku(sku: string): Promise<BritpartBasic> {
+  // 1) API-försök
   const candidates = [
     `/part/getproduct?code=${encodeURIComponent(sku)}`,
     `/part/get?code=${encodeURIComponent(sku)}`,
@@ -253,26 +258,40 @@ async function getOneBasicForSku(sku: string): Promise<BritpartBasic> {
 
       const obj = data.items ?? data;
       const title = obj?.title ?? obj?.name ?? undefined;
-      const imageUrl =
+      const imageUrlAbs = toAbs(
         obj?.imageUrl ??
-        obj?.image?.url ??
-        obj?.images?.[0]?.url ??
-        obj?.media?.[0]?.src ??
-        undefined;
+          obj?.image?.url ??
+          obj?.images?.[0]?.url ??
+          obj?.media?.[0]?.src ??
+          undefined
+      );
       const description = obj?.description ?? undefined;
 
-      if (title || imageUrl || description) {
-        return { sku, title, description, imageUrl };
+      if (title || imageUrlAbs || description) {
+        return { sku, title, description, imageUrl: imageUrlAbs };
       }
     } catch {
       // prova nästa
     }
   }
 
-  // Fallback – publik produktsida
-  const pageUrl = `${BRITPART_BASE}/parts/product/${encodeURIComponent(sku)}`;
-  const meta = await fetchOgMeta(pageUrl);
-  return { sku, title: meta.title ?? sku, imageUrl: meta.imageUrl };
+  // 2) Publika sidor – testa flera mönster
+  const pages = [
+    `${BRITPART_BASE}/parts/product/${encodeURIComponent(sku)}`,
+    `${BRITPART_BASE}/product/${encodeURIComponent(sku)}`,
+    `${BRITPART_BASE}/parts/${encodeURIComponent(sku)}`,
+    `${BRITPART_BASE}/products/${encodeURIComponent(sku)}`,
+  ];
+
+  for (const u of pages) {
+    const meta = await fetchOgMeta(u);
+    if (meta.imageUrl || meta.title) {
+      return { sku, title: meta.title ?? sku, imageUrl: meta.imageUrl };
+    }
+  }
+
+  // 3) Inget hittades
+  return { sku, title: sku };
 }
 
 export async function britpartGetBasicForSkus(
@@ -301,9 +320,7 @@ export async function britpartGetBasicForSkus(
   return map;
 }
 
-/* ------------------------------------------------------------------ */
-/* Bakåtkompatibel hjälpare                                           */
-/* ------------------------------------------------------------------ */
+/* ----------------------------- Bakåtkomp. ----------------------------- */
 
 export type BritpartImportItem = {
   sku: string;
