@@ -140,3 +140,31 @@ export async function wcBatchUpdateProducts(updates: WooUpdate[]): Promise<numbe
   }
   return done;
 }
+
+export type WooCreate = {
+  name: string;
+  sku: string;
+  type?: "simple" | "external" | "grouped" | "variable";
+  status?: WooStatus; // "draft" är bra som default om pris saknas
+  regular_price?: string; // sätts om du har pris
+  description?: string;
+  short_description?: string;
+  categories?: { id: number }[];
+  images?: { src: string }[];
+};
+
+/** Batch-skapa produkter (max 100 / request). Returnerar antal skapade + deras IDs. */
+export async function wcBatchCreateProducts(items: WooCreate[]): Promise<{ count: number; ids: number[] }> {
+  if (!items.length) return { count: 0, ids: [] };
+
+  let count = 0;
+  const ids: number[] = [];
+  for (let i = 0; i < items.length; i += 100) {
+    const chunk = items.slice(i, i + 100);
+    const res = await wcPostJSON<{ create?: Array<{ id: number }> }>(`/products/batch`, { create: chunk });
+    const created = Array.isArray(res.create) ? res.create : [];
+    count += created.length;
+    for (const c of created) if (c?.id) ids.push(Number(c.id));
+  }
+  return { count, ids };
+}

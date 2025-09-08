@@ -263,7 +263,7 @@ export default function App() {
       setIsImporting(true);
       const res = await runImport({ ids, pageSize: perPage, roundingMode, roundTo });
       console.log("Import OK", res);
-      alert(`Import klar. Kategorier: ${ids.length}, blad: ${res.leafIds?.length ?? "okänt"}`);
+      alert( `Import klar.\n` + `Valda kategorier: ${ids.length}\n` + `Hittade artiklar (unika SKU): ${res.totalSkus}\n` + `Fanns redan: ${res.exists}\n` +`Nyskapade: ${res.created}`);
     } catch (e: any) {
       console.error("Import fail", e);
       alert(e?.message || String(e));
