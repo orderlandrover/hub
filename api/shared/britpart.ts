@@ -105,7 +105,6 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
 
-      // Backoff på 5xx/429
       if (res.status >= 500 || res.status === 429) {
         await sleep(400 + attempt * 300);
         continue;
@@ -128,7 +127,7 @@ export { britpartFetchRaw as britpartFetch };
 /* ------------------------------------------------------------------ */
 
 /** Prova först ?id=, sedan ?categoryId= (olika miljöer förväntar olika) */
-export async function getCategory(categoryId: number): Promise BritpartCategoryResponse {
+export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
   const tryOne = async (param: "id" | "categoryId") => {
     const res = await britpartFetchRaw(`/part/getcategories?${param}=${Number(categoryId)}`);
     const json = await safeJson(res);
@@ -137,7 +136,6 @@ export async function getCategory(categoryId: number): Promise BritpartCategoryR
   try {
     return await tryOne("id");
   } catch {
-    // försök med det andra parameternamnet
     return await tryOne("categoryId");
   }
 }
@@ -167,7 +165,7 @@ async function collectPartCodesFrom(
 ): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
-  if (depth > 12) return []; // skydd mot udda djup
+  if (depth > 12) return [];
 
   let cat = catCache.get(catId);
   if (!cat) {
@@ -267,7 +265,7 @@ async function getOneBasicForSku(sku: string): Promise<BritpartBasic> {
         return { sku, title, description, imageUrl };
       }
     } catch {
-      // ignorera och försök nästa
+      // prova nästa
     }
   }
 
