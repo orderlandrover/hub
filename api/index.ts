@@ -21,3 +21,4 @@ import "./price-upload-sas";
 import "./price-upload-from-blob"; // om du använder den efter SAS-steget
 import "./price-upload-probe"; 
 import "./import-probe";
+import "./britpart-probe-categories";
