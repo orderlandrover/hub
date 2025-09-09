@@ -26,3 +26,26 @@
   background:#e11d48!important;
   color:#fff !important;
 }
+
+/* Fullbredds-override (lägg sist i lastad CSS) */
+html, body, #root { width: 100%; }
+#root {
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  text-align: initial !important;
+}
+
+/* Om något använder .container (Tailwind-plugin eller tema) */
+.container {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* Säkerställ att vårt main inte begränsas av någon max-width */
+main, .app-shell, .app-container {
+  max-width: none !important;
+}
+
+/* Vissa UI-kit sätter centrering på body/html – stäng av */
+html, body { margin: 0 !important; }

@@ -9,14 +9,28 @@ type ListResponse<T> = { items: T[]; total: number; pages: number; page: number 
 type WCCategory = { id: number; name: string; parent: number };
 type RoundModeUI = "none" | "nearest" | "up" | "down";
 
-/* --------------------------- Utils / UI --------------------------- */
+/** Probe-typer (från /api/britpart-probe-categories) */
+type ProbeLeaf = { leafId: number; count: number; sampleSkus: string[] };
+type ProbeResponse = {
+  ok: boolean;
+  inputIds: number[];
+  uniqueSkuCount: number;
+  leaves: ProbeLeaf[];
+  sampleAll: string[];
+};
+
+/* --------------------------- Utils / API --------------------------- */
 const API = {
   BRITPART_SUBCATS: "/api/britpart-subcategories",
   WC_CATEGORIES: "/api/wc-categories",
+  BRITPART_PROBE_CATS: "/api/britpart-probe-categories",
 };
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const r = await fetch(input, { headers: { "Content-Type": "application/json" }, ...init });
+  const r = await fetch(input, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(() => "")}`);
   return (await r.json()) as T;
 }
@@ -264,6 +278,30 @@ export default function App() {
   const [roundTo, setRoundTo] = useState<number>(1);
   const [isImporting, setIsImporting] = useState(false);
 
+  // PROBE state
+  const [probeLoading, setProbeLoading] = useState(false);
+  const [probe, setProbe] = useState<ProbeResponse | null>(null);
+
+  const handleProbe = async () => {
+    if (!selected.length) return;
+    try {
+      setProbeLoading(true);
+      const res = await jsonFetch<ProbeResponse>(API.BRITPART_PROBE_CATS, {
+        method: "POST",
+        body: JSON.stringify({ ids: selected }),
+      });
+      // sortera leafs efter count desc
+      res.leaves = [...res.leaves].sort((a, b) => b.count - a.count);
+      setProbe(res);
+      console.log("Probe:", res);
+    } catch (e: any) {
+      console.error("Probe fail", e);
+      alert(e?.message || String(e));
+    } finally {
+      setProbeLoading(false);
+    }
+  };
+
   const handleImport = async () => {
     const ids = selected;
     if (!ids.length) return;
@@ -318,7 +356,7 @@ Update-fel: ${r.updateFailedIds?.length || 0}`
         </div>
       </header>
 
-      {/* HELBREDD: ingen max-w-container – vi använder w-full */}
+      {/* HELBREDD */}
       <main className="w-full px-6 py-6 space-y-6">
         <nav className="flex flex-wrap gap-2">
           {TABS.map((t) => (
@@ -338,7 +376,10 @@ Update-fel: ${r.updateFailedIds?.length || 0}`
         </nav>
 
         {tab === "import" && (
-          <Section title="Välj Britpart-subkategorier" subtitle="Filtrering sker på subkategori-ID i backend.">
+          <Section
+            title="Välj Britpart-subkategorier"
+            subtitle="Filtrering sker på subkategori-ID i backend. Använd 'Förhandsvisa' för att se exakt vilka leafs & antal innan du importerar."
+          >
             <SubcategorySelector selected={selected} onChange={setSelected} />
             <div className="h-4" />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -378,12 +419,54 @@ Update-fel: ${r.updateFailedIds?.length || 0}`
                 <p className="text-xs text-gray-500 mt-1">Ex: 1 = hela kr, 5 = femkronorssteg.</p>
               </div>
             </div>
-            <div className="mt-3 flex items-center gap-2">
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button variant="outline" onClick={handleProbe} disabled={!selected.length || probeLoading}>
+                {probeLoading ? "Läser…" : "Förhandsvisa (probe)"}
+              </Button>
               <Button onClick={handleImport} disabled={!selected.length || isImporting}>
                 {isImporting ? "Importerar…" : `Importera ${selected.length} valda`}
               </Button>
               <Badge>ID: {selected.join(", ") || "–"}</Badge>
             </div>
+
+            {/* Probe-resultatpanel */}
+            {probe && (
+              <div className="mt-4 rounded-xl border border-gray-200 p-4">
+                <div className="flex flex-wrap items-center gap-3 mb-2">
+                  <Badge>Unika SKU totalt: {probe.uniqueSkuCount}</Badge>
+                  <Badge>Valda rötter: {probe.inputIds.join(", ")}</Badge>
+                  {probe.sampleAll?.length ? (
+                    <Badge>Exempel: {probe.sampleAll.slice(0, 8).join(", ")}{probe.sampleAll.length > 8 ? " …" : ""}</Badge>
+                  ) : null}
+                </div>
+
+                <div className="overflow-auto border border-gray-200 rounded-lg">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-3 py-2">Leaf ID</th>
+                        <th className="text-left px-3 py-2">Antal SKU</th>
+                        <th className="text-left px-3 py-2">Exempel (max 5)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {probe.leaves.map((row) => (
+                        <tr key={row.leafId} className="odd:bg-white even:bg-gray-50">
+                          <td className="px-3 py-2 font-mono">#{row.leafId}</td>
+                          <td className="px-3 py-2">{row.count}</td>
+                          <td className="px-3 py-2">{row.sampleSkus.join(", ")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Tip: Om två olika rotnoder visar samma totalsiffra beror det ofta på att deras leafs innehåller
+                  överlappande artiklar. Probe-tabellen ovan avslöjar exakt var antalen kommer ifrån.
+                </p>
+              </div>
+            )}
           </Section>
         )}
 

@@ -5,7 +5,9 @@ import { env } from "./env";
 const BRITPART_BASE = (env.BRITPART_BASE || "").replace(/\/+$/, "");
 const BRITPART_TOKEN = env.BRITPART_TOKEN || "";
 
-/* ----------------------------- Typer ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Typer                                                           */
+/* --------------------------------------------------------------- */
 
 export type BritpartCategoryResponse = {
   id: number;
@@ -25,9 +27,11 @@ export type BritpartCategoryResponse = {
 export type BritpartBasic = {
   sku: string;
   title?: string;
-  description?: string;   // HTML från Britpart (content + ev. subText)
-  imageUrl?: string;      // presigned S3-URL eller absolut http(s)
-  imageSource?:           // så vi vet var bilden kom ifrån
+  description?: string;        // HTML från Britpart (content + ev. subText)
+  imageUrl?: string;           // presigned S3-URL eller absolut http(s)
+  url?: string;                // publika produktsidan hos Britpart (om känd)
+  categoryIds?: number[];      // <-- NYTT: för probe / kontroll
+  imageSource?:
     | "getall.imageUrls[0]"
     | "getall.imageUrls[n]"
     | "api.imageUrl"
@@ -40,7 +44,7 @@ export type BritpartBasic = {
     | "none";
 };
 
-/** GetAll-schema (sammandrag) */
+/** GetAll-schema (sammandrag) enligt deras docs */
 export type GetAllPart = {
   code: string;
   title?: string;
@@ -60,7 +64,9 @@ export type GetAllResponse = {
   parts: GetAllPart[];
 };
 
-/* ----------------------------- Helpers ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Helpers                                                         */
+/* --------------------------------------------------------------- */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,10 +87,16 @@ async function safeJson<T = any>(res: Response): Promise<T> {
 
 function toAbs(u?: string): string | undefined {
   if (!u) return undefined;
-  try { return new URL(u, BRITPART_BASE).toString(); } catch { return undefined; }
+  try {
+    return new URL(u, BRITPART_BASE).toString();
+  } catch {
+    return undefined;
+  }
 }
 
-/* ----------------------------- Lågnivå fetch ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Lågnivå fetch med backoff                                       */
+/* --------------------------------------------------------------- */
 
 async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   ensureConfigured();
@@ -104,7 +116,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
 
-      if (res.status >= 500 || res.status === 429) {
+      if (res.status === 429 || res.status >= 500) {
         await sleep(400 + attempt * 300);
         continue;
       }
@@ -121,7 +133,9 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
 /** Exporteras ibland separat */
 export { britpartFetchRaw as britpartFetch };
 
-/* ----------------------------- Kategorier (oförändrat) ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Kategorier                                                      */
+/* --------------------------------------------------------------- */
 
 function normalizeCategory(raw: any): BritpartCategoryResponse {
   const obj = raw?.items ?? raw ?? {};
@@ -155,7 +169,11 @@ export async function getCategory(categoryId: number): Promise<BritpartCategoryR
     const json = await safeJson(res);
     return normalizeCategory(json);
   };
-  try { return await tryOne("id"); } catch { return await tryOne("categoryId"); }
+  try {
+    return await tryOne("id");
+  } catch {
+    return await tryOne("categoryId");
+  }
 }
 
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
@@ -169,19 +187,26 @@ export async function getDirectSubcategories(
   return parent.subcategories ?? [];
 }
 
-/* ----------------------------- Part codes (rekursivt) ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Part codes (rekursivt)                                          */
+/* --------------------------------------------------------------- */
 
 const catCache = new Map<number, BritpartCategoryResponse>();
 
 async function collectPartCodesFrom(
-  catId: number, seen: Set<number>, depth = 0
+  catId: number,
+  seen: Set<number>,
+  depth = 0
 ): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
   if (depth > 12) return [];
 
   let cat = catCache.get(catId);
-  if (!cat) { cat = await getCategory(catId); catCache.set(catId, cat); }
+  if (!cat) {
+    cat = await getCategory(catId);
+    catCache.set(catId, cat);
+  }
 
   const out: string[] = [];
   if (Array.isArray(cat.partCodes)) out.push(...cat.partCodes);
@@ -189,10 +214,10 @@ async function collectPartCodesFrom(
   if (Array.isArray(cat.subcategories)) {
     for (const sc of cat.subcategories) {
       if (Array.isArray(sc.partCodes)) out.push(...sc.partCodes);
-      out.push(...await collectPartCodesFrom(Number(sc.id), seen, depth + 1));
+      out.push(...(await collectPartCodesFrom(Number(sc.id), seen, depth + 1)));
       if (Array.isArray(sc.subcategoryIds)) {
         for (const subId of sc.subcategoryIds) {
-          out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
+          out.push(...(await collectPartCodesFrom(Number(subId), seen, depth + 1)));
         }
       }
     }
@@ -200,7 +225,7 @@ async function collectPartCodesFrom(
 
   if (Array.isArray(cat.subcategoryIds)) {
     for (const subId of cat.subcategoryIds) {
-      out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
+      out.push(...(await collectPartCodesFrom(Number(subId), seen, depth + 1)));
     }
   }
 
@@ -210,25 +235,30 @@ async function collectPartCodesFrom(
 export async function britpartGetPartCodesForCategories(categoryIds: number[]): Promise<string[]> {
   const seen = new Set<number>();
   const all: string[] = [];
-  for (const id of categoryIds) all.push(...await collectPartCodesFrom(Number(id), seen, 0));
+  for (const id of categoryIds) {
+    all.push(...(await collectPartCodesFrom(Number(id), seen, 0)));
+  }
   return Array.from(new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0)));
 }
 
-/* ----------------------------- GET /part/getall ----------------------------- */
+/* --------------------------------------------------------------- */
+/* GET /part/getall                                                */
+/* --------------------------------------------------------------- */
 
 /** GetAll enligt dokumentationen (code = exakt part code / sök) */
 export async function britpartGetAll(params: {
   page?: number;
-  code?: string;                    // exakt SKU (kan vara “sök” hos Britpart)
-  modifiedSince?: string | Date;    // ISO 8601
+  code?: string;                  // exakt SKU (kan vara “sök” hos Britpart)
+  modifiedSince?: string | Date;  // ISO 8601
 }): Promise<GetAllResponse> {
   const usp = new URLSearchParams();
   if (params.page) usp.set("page", String(params.page));
   if (params.code) usp.set("code", String(params.code));
   if (params.modifiedSince) {
-    const iso = typeof params.modifiedSince === "string"
-      ? params.modifiedSince
-      : (params.modifiedSince as Date).toISOString();
+    const iso =
+      typeof params.modifiedSince === "string"
+        ? params.modifiedSince
+        : (params.modifiedSince as Date).toISOString();
     usp.set("modifiedSince", iso);
   }
   // token via header; (de accepterar även query-param, men header är redan satt)
@@ -239,54 +269,80 @@ export async function britpartGetAll(params: {
 /** Hämta titel/bild/description för EN SKU via GetAll, med fallback. */
 async function basicFromGetAll(code: string): Promise<BritpartBasic> {
   try {
-    const r = await britpartGetAll({ code });        // filtrerat på SKU
-    const part = (r?.parts || []).find(p => (p.code || "").toLowerCase() === code.toLowerCase())
-      || (r?.parts || [])[0];
+    const r = await britpartGetAll({ code }); // filtrerat på SKU
+    const parts = Array.isArray(r?.parts) ? r.parts : [];
+    const exact =
+      parts.find((p) => (p.code || "").toLowerCase() === code.toLowerCase()) || parts[0];
 
-    if (part) {
-      const html = [part.content || "", part.subText || ""].filter(Boolean).join("\n");
-      const img = Array.isArray(part.imageUrls) && part.imageUrls.length ? part.imageUrls[0] : undefined;
+    if (exact) {
+      const html = [exact.content || "", exact.subText || ""]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+
+      const firstImg =
+        Array.isArray(exact.imageUrls) && exact.imageUrls.length ? exact.imageUrls[0] : undefined;
+
       return {
         sku: code,
-        title: part.title || code,
+        title: exact.title || code,
         description: html || undefined,
-        imageUrl: img,
-        imageSource: img ? "getall.imageUrls[0]" : "none",
+        imageUrl: firstImg,
+        url: exact.url,
+        categoryIds: Array.isArray(exact.categoryIds)
+          ? exact.categoryIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+          : undefined,
+        imageSource: firstImg ? "getall.imageUrls[0]" : "none",
       };
     }
   } catch {
-    // fall through to scraping fallback nedan
+    // Ignorera och prova fallback
   }
   return await basicFromFallback(code);
 }
 
-/* ----------------------------- Fallback: publik sida (og:image m.m.) ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Fallback: publik sida (og:image / twitter / link / img)         */
+/* --------------------------------------------------------------- */
 
-async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
+type OgPick =
+  | { imageUrl?: string; title?: string; source?: BritpartBasic["imageSource"] }
+  | {};
+
+async function fetchOgMeta(url: string): Promise<OgPick> {
   try {
     const res = await fetch(url);
     if (!res.ok) return {};
     const html = await res.text();
 
-    const meta = (prop: string, attr = "property") => {
-      const re = new RegExp(`<meta[^>]+${attr}=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i");
+    const pickMeta = (prop: string, attr = "property") => {
+      const re = new RegExp(
+        `<meta[^>]+${attr}=["']${prop}["'][^>]+content=["']([^"']+)["']`,
+        "i"
+      );
       return re.exec(html)?.[1];
     };
-    const link = (rel: string) => {
+    const pickLink = (rel: string) => {
       const re = new RegExp(`<link[^>]+rel=["']${rel}["'][^>]+href=["']([^"']+)["']`, "i");
       return re.exec(html)?.[1];
     };
+    const title =
+      pickMeta("og:title") || pickMeta("twitter:title", "name") || undefined;
 
-    const title = meta("og:title") || meta("twitter:title", "name") || undefined;
-    const candidates: (string | undefined)[] = [
-      meta("og:image"),
-      meta("twitter:image", "name"),
-      link("image_src"),
-      (/<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] ?? undefined),
-    ];
+    // prio-ordning och källa
+    const og = pickMeta("og:image");
+    if (og) return { title, imageUrl: toAbs(og), source: "og:image" };
 
-    const first = candidates.find(Boolean);
-    return { title, imageUrl: toAbs(first) };
+    const tw = pickMeta("twitter:image", "name");
+    if (tw) return { title, imageUrl: toAbs(tw), source: "twitter:image" };
+
+    const linkImg = pickLink("image_src");
+    if (linkImg) return { title, imageUrl: toAbs(linkImg), source: "link:image_src" };
+
+    const imgTag = /<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1];
+    if (imgTag) return { title, imageUrl: toAbs(imgTag), source: "html:img" };
+
+    return { title };
   } catch {
     return {};
   }
@@ -299,16 +355,26 @@ async function basicFromFallback(sku: string): Promise<BritpartBasic> {
     `${BRITPART_BASE}/parts/${encodeURIComponent(sku)}`,
     `${BRITPART_BASE}/products/${encodeURIComponent(sku)}`,
   ];
+
   for (const u of pages) {
     const meta = await fetchOgMeta(u);
-    if (meta.imageUrl || meta.title) {
-      return { sku, title: meta.title ?? sku, imageUrl: meta.imageUrl, imageSource: meta.imageUrl ? "og:image" : "none" };
+    if ((meta as any).imageUrl || (meta as any).title) {
+      const m = meta as OgPick & { imageUrl?: string; title?: string; source?: BritpartBasic["imageSource"] };
+      return {
+        sku,
+        title: m.title ?? sku,
+        imageUrl: m.imageUrl,
+        url: u,
+        imageSource: m.imageUrl ? (m.source ?? "og:image") : "none",
+      };
     }
   }
   return { sku, title: sku, imageSource: "none" };
 }
 
-/* ----------------------------- Publik multi-funktion ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Publik multi-funktion                                           */
+/* --------------------------------------------------------------- */
 
 export async function britpartGetBasicForSkus(
   skus: string[],
@@ -322,7 +388,7 @@ export async function britpartGetBasicForSkus(
       const idx = i++;
       const sku = skus[idx];
       try {
-        // Försök GetAll först, fallback om inget
+        // Försök GetAll först, fallback om tomt
         map[sku] = await basicFromGetAll(sku);
       } catch {
         map[sku] = { sku, title: sku, imageSource: "none" };
@@ -336,7 +402,9 @@ export async function britpartGetBasicForSkus(
   return map;
 }
 
-/* ----------------------------- Bakåtkomp. ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Bakåtkompatibelt hjälp-API                                      */
+/* --------------------------------------------------------------- */
 
 export type BritpartImportItem = {
   sku: string;
@@ -347,7 +415,9 @@ export type BritpartImportItem = {
   categoryId?: number;
 };
 
-export async function britpartGetByCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
+export async function britpartGetByCategories(
+  categoryIds: number[]
+): Promise<BritpartImportItem[]> {
   const codes = await britpartGetPartCodesForCategories(categoryIds);
   return codes.map((sku) => ({ sku }));
 }
