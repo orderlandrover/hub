@@ -283,16 +283,26 @@ export default function App() {
   const [probe, setProbe] = useState<ProbeResponse | null>(null);
 
   const handleProbe = async () => {
-    if (!selected.length) return;
+    if (!selected.length) {
+      alert("Välj minst en (sub)kategori först.");
+      return;
+    }
     try {
       setProbeLoading(true);
       const res = await jsonFetch<ProbeResponse>(API.BRITPART_PROBE_CATS, {
         method: "POST",
         body: JSON.stringify({ ids: selected }),
       });
-      // sortera leafs efter count desc
-      res.leaves = [...res.leaves].sort((a, b) => b.count - a.count);
-      setProbe(res);
+
+      const leaves = Array.isArray(res?.leaves) ? [...res.leaves].sort((a, b) => b.count - a.count) : [];
+      setProbe({
+        ok: !!res?.ok,
+        inputIds: Array.isArray(res?.inputIds) ? res.inputIds : [],
+        uniqueSkuCount: Number((res as any)?.uniqueSkuCount ?? 0),
+        leaves,
+        sampleAll: Array.isArray(res?.sampleAll) ? res.sampleAll : [],
+      });
+
       console.log("Probe:", res);
     } catch (e: any) {
       console.error("Probe fail", e);
@@ -309,7 +319,7 @@ export default function App() {
     try {
       setIsImporting(true);
 
-      const r = await runImport({
+      const r: any = await runImport({
         ids,
         pageSize: Number(perPage) || 200,
         roundingMode,
@@ -318,19 +328,24 @@ export default function App() {
 
       console.log("Import result", r);
 
+      const noBasicsExamples =
+        Array.isArray(r?.noBasicsSample) && r.noBasicsSample.length
+          ? `  ex: ${r.noBasicsSample.join(", ")}`
+          : "";
+
       alert(
         `Import klar.
 Valda kategorier: ${selected.length}  [${selected.join(", ")}]
-Hittade artiklar (unika SKU): ${r.totalSkus}
-Bearbetade i denna körning: ${r.processedSkus}
-Återstår: ${r.remainingSkus}  (${r.hasMore ? "kör igen" : "klart"})
-Fanns redan: ${r.exists}
-Nyskapade: ${r.created}
-Uppdaterade (namn/bild/beskrivning): ${r.updatedWithMeta}
-Ogiltiga bild-URL: ${r.invalidImageUrls}
-SKU utan basdata: ${r.noBasics || 0}${r.noBasicsSample?.length ? `  ex: ${r.noBasicsSample.join(", ")}` : ""}
-Create-fel: ${r.createFailedSkus?.length || 0}
-Update-fel: ${r.updateFailedIds?.length || 0}`
+Hittade artiklar (unika SKU): ${r?.totalSkus ?? 0}
+Bearbetade i denna körning: ${r?.processedSkus ?? 0}
+Återstår: ${r?.remainingSkus ?? 0}  (${r?.hasMore ? "kör igen" : "klart"})
+Fanns redan: ${r?.exists ?? 0}
+Nyskapade: ${r?.created ?? 0}
+Uppdaterade (namn/bild/beskrivning): ${r?.updatedWithMeta ?? 0}
+Ogiltiga bild-URL: ${r?.invalidImageUrls ?? 0}
+SKU utan basdata: ${r?.noBasics ?? 0}${noBasicsExamples}
+Create-fel: ${Array.isArray(r?.createFailedSkus) ? r.createFailedSkus.length : 0}
+Update-fel: ${Array.isArray(r?.updateFailedIds) ? r.updateFailedIds.length : 0}`
       );
     } catch (e: any) {
       console.error("Import fail", e);
@@ -435,8 +450,10 @@ Update-fel: ${r.updateFailedIds?.length || 0}`
               <div className="mt-4 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center gap-3 mb-2">
                   <Badge>Unika SKU totalt: {probe.uniqueSkuCount}</Badge>
-                  <Badge>Valda rötter: {probe.inputIds.join(", ")}</Badge>
-                  {probe.sampleAll?.length ? (
+                  <Badge>
+                    Valda rötter: {Array.isArray(probe.inputIds) && probe.inputIds.length ? probe.inputIds.join(", ") : "–"}
+                  </Badge>
+                  {Array.isArray(probe.sampleAll) && probe.sampleAll.length ? (
                     <Badge>Exempel: {probe.sampleAll.slice(0, 8).join(", ")}{probe.sampleAll.length > 8 ? " …" : ""}</Badge>
                   ) : null}
                 </div>
@@ -451,11 +468,13 @@ Update-fel: ${r.updateFailedIds?.length || 0}`
                       </tr>
                     </thead>
                     <tbody>
-                      {probe.leaves.map((row) => (
+                      {(probe.leaves || []).map((row) => (
                         <tr key={row.leafId} className="odd:bg-white even:bg-gray-50">
                           <td className="px-3 py-2 font-mono">#{row.leafId}</td>
                           <td className="px-3 py-2">{row.count}</td>
-                          <td className="px-3 py-2">{row.sampleSkus.join(", ")}</td>
+                          <td className="px-3 py-2">
+                            {Array.isArray(row.sampleSkus) && row.sampleSkus.length ? row.sampleSkus.join(", ") : "–"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
