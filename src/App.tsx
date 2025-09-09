@@ -7,6 +7,7 @@ import { runImport } from "./api/britpart";
 type Subcategory = { id: number; title: string; parentId?: number };
 type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
 type WCCategory = { id: number; name: string; parent: number };
+type RoundModeUI = "none" | "nearest" | "up" | "down";
 
 /* --------------------------- Utils / UI --------------------------- */
 const API = {
@@ -16,7 +17,7 @@ const API = {
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const r = await fetch(input, { headers: { "Content-Type": "application/json" }, ...init });
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(()=>"")}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(() => "")}`);
   return (await r.json()) as T;
 }
 
@@ -113,12 +114,14 @@ function SubcategorySelector({
         setSubcats(sorted);
       } catch (e) {
         console.error(e);
-        setSubcats([]);
+        setSubcats([]); // failsafe
       } finally {
         setLoading(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -148,8 +151,11 @@ function SubcategorySelector({
             key={sc.id}
             className={classNames(
               "flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer border transition",
-              selected.includes(sc.id) ? "bg-indigo-50 border-indigo-300" : "bg-white hover:bg-gray-50 border-gray-200"
-            )}>
+              selected.includes(sc.id)
+                ? "bg-indigo-50 border-indigo-300"
+                : "bg-white hover:bg-gray-50 border-gray-200"
+            )}
+          >
             <input
               type="checkbox"
               checked={selected.includes(sc.id)}
@@ -226,7 +232,11 @@ function WooCategoriesPanel() {
           <Badge>
             Sida {data.page} / {data.pages}
           </Badge>
-          <Button variant="outline" onClick={() => setPage((p) => Math.min(data.pages, p + 1))} disabled={page >= (data.pages || 1)}>
+          <Button
+            variant="outline"
+            onClick={() => setPage((p) => Math.min(data.pages, p + 1))}
+            disabled={page >= (data.pages || 1)}
+          >
             Nästa
           </Button>
         </div>
@@ -238,32 +248,52 @@ function WooCategoriesPanel() {
 /* --------------------------------- APP --------------------------------- */
 const TABS = [
   { key: "import", label: "Importera Britpart" },
-  { key: "excel", label: "Avancerad import" },
+  { key: "excel", label: "Avancerad import" }, // SAS/Blob
   { key: "categories", label: "Woo-kategorier" },
-  { key: "logs", label: "Produkter" },
+  { key: "logs", label: "Produkter" }, // visar vår ProductsTab
 ] as const;
-type TabKey = typeof TABS[number]["key"];
+type TabKey = (typeof TABS)[number]["key"];
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>("import");
   const [selected, setSelected] = useState<number[]>([]);
 
-  // nya states för formuläret
+  // formulär-state
   const [perPage, setPerPage] = useState<number>(200);
-  const [roundingMode, setRoundingMode] = useState<"none" | "nearest" | "up" | "down">("none");
+  const [roundingMode, setRoundingMode] = useState<RoundModeUI>("none");
   const [roundTo, setRoundTo] = useState<number>(1);
   const [isImporting, setIsImporting] = useState(false);
 
   const handleImport = async () => {
     const ids = selected;
-    console.log("Import click", ids);
     if (!ids.length) return;
 
     try {
       setIsImporting(true);
-      const res = await runImport({ ids, pageSize: perPage, roundingMode, roundTo });
-      console.log("Import OK", res);
-      alert( `Import klar.\n` + `Valda kategorier: ${ids.length}\n` + `Hittade artiklar (unika SKU): ${res.totalSkus}\n` + `Fanns redan: ${res.exists}\n` +`Nyskapade: ${res.created}`);
+
+      const r = await runImport({
+        ids,
+        pageSize: Number(perPage) || 200,
+        roundingMode,
+        roundTo: Number(roundTo) || 1,
+      });
+
+      console.log("Import result", r);
+
+      alert(
+        `Import klar.
+Valda kategorier: ${selected.length}  [${selected.join(", ")}]
+Hittade artiklar (unika SKU): ${r.totalSkus}
+Bearbetade i denna körning: ${r.processedSkus}
+Återstår: ${r.remainingSkus}  (${r.hasMore ? "kör igen" : "klart"})
+Fanns redan: ${r.exists}
+Nyskapade: ${r.created}
+Uppdaterade (namn/bild/beskrivning): ${r.updatedWithMeta}
+Ogiltiga bild-URL: ${r.invalidImageUrls}
+SKU utan basdata: ${r.noBasics || 0}${r.noBasicsSample?.length ? `  ex: ${r.noBasicsSample.join(", ")}` : ""}
+Create-fel: ${r.createFailedSkus?.length || 0}
+Update-fel: ${r.updateFailedIds?.length || 0}`
+      );
     } catch (e: any) {
       console.error("Import fail", e);
       alert(e?.message || String(e));
@@ -275,7 +305,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="w-full px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
@@ -288,7 +318,8 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      {/* HELBREDD: ingen max-w-container – vi använder w-full */}
+      <main className="w-full px-6 py-6 space-y-6">
         <nav className="flex flex-wrap gap-2">
           {TABS.map((t) => (
             <button
@@ -327,7 +358,7 @@ export default function App() {
                 <select
                   className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
                   value={roundingMode}
-                  onChange={(e) => setRoundingMode(e.target.value as any)}
+                  onChange={(e) => setRoundingMode(e.target.value as RoundModeUI)}
                 >
                   <option value="none">Ingen</option>
                   <option value="nearest">Närmaste</option>
