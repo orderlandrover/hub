@@ -1,7 +1,7 @@
 // api/import-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import {
-  britpartGetPartCodesForCategories,
+  britpartGetPartCodesForCategoriesFiltered,
   britpartGetBasicForSkus,
 } from "../shared/britpart";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../shared/wc";
 
 /* --------------------------------------------------------------- */
-/* CORS + utils                                                     */
+/* CORS + utils                                                    */
 /* --------------------------------------------------------------- */
 
 const CORS = {
@@ -30,7 +30,12 @@ const validImage = (url?: string) => isHttpUrl(url);
 /** Kanonisk bild-URL (utan query) för att känna igen samma källa mellan körningar */
 const canon = (u?: string) => {
   if (!u) return null;
-  try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return null; }
+  try {
+    const x = new URL(u);
+    return `${x.origin}${x.pathname}`;
+  } catch {
+    return null;
+  }
 };
 
 /* --------------------------------------------------------------- */
@@ -91,7 +96,10 @@ async function createProductsSafe(items: any[], ctx: InvocationContext) {
           const text = emsg(ee);
           if (/sku/i.test(text) && /exist/i.test(text)) {
             const id = await wcFindProductIdBySku(p.sku);
-            if (id) { idsBySku[p.sku] = id; continue; }
+            if (id) {
+              idsBySku[p.sku] = id;
+              continue;
+            }
           }
           failedSkus.push(p.sku);
           ctx.warn?.(`Create fail ${p.sku}: ${text}`);
@@ -114,13 +122,34 @@ async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) 
     } catch (e: any) {
       ctx.warn?.(`Batch update fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
       for (const u of chunk) {
-        try { await wcPutJSON(`/products/${u.id}`, u); updated++; }
-        catch (ee: any) { failedIds.push(u.id); ctx.warn?.(`Update fail id=${u.id}: ${emsg(ee)}`); }
+        try {
+          await wcPutJSON(`/products/${u.id}`, u);
+          updated++;
+        } catch (ee: any) {
+          failedIds.push(u.id);
+          ctx.warn?.(`Update fail id=${u.id}: ${emsg(ee)}`);
+        }
       }
     }
   }
   return { updated, failedIds };
 }
+
+/* --------------------------------------------------------------- */
+/* Types                                                           */
+/* --------------------------------------------------------------- */
+
+type ImportRunBody = {
+  ids: number[];
+  pageSize?: number;
+  /** valfritt: importera endast från dessa leaf-ID (från probet) */
+  leafIds?: number[];
+  /** valfritt: begränsa till exakt dessa SKU (kommaseparerat i UI → array här) */
+  restrictSkus?: string[];
+  /** valfritt: avrundningsparametrar (sparas ej här – bara passthrough) */
+  roundingMode?: "none" | "nearest" | "up" | "down";
+  roundTo?: number;
+};
 
 /* --------------------------------------------------------------- */
 /* Azure Function: POST /api/import-run                             */
@@ -135,7 +164,7 @@ app.http("import-run", {
 
     let where = "start";
     try {
-      const body = (await req.json()) as { ids: number[]; pageSize?: number };
+      const body = (await req.json()) as ImportRunBody;
       const ids = body?.ids;
       if (!Array.isArray(ids) || ids.length === 0) {
         return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
@@ -145,13 +174,50 @@ app.http("import-run", {
       const PAGE_MAX = 500;
       const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 200), PAGE_MAX));
 
-      /* 1) Samla SKU (unika) – rekursivt via kategorier och underkategorier */
+      /* 1) Samla SKU (unika) – via valda rötter + ev. leaf-filter och/eller explicit restrictSkus */
       where = "collect-skus";
-      const allPartCodes = await britpartGetPartCodesForCategories(ids);
-      const allSkus = Array.from(new Set(allPartCodes.map(String)));
+      let allSkus = Array.from(
+        new Set(
+          (await britpartGetPartCodesForCategoriesFiltered(ids, body.leafIds)).map(String)
+        )
+      );
+
+      if (Array.isArray(body.restrictSkus) && body.restrictSkus.length) {
+        const allow = new Set(body.restrictSkus.map((s) => String(s)));
+        allSkus = allSkus.filter((s) => allow.has(s));
+      }
+
       const skus = allSkus.slice(0, pageSize);
       const remainingSkus = Math.max(0, allSkus.length - skus.length);
-      ctx.log?.(`collect-skus: total=${allSkus.length}, pageSize=${pageSize}`);
+      ctx.log?.(
+        `collect-skus: roots=${ids.join(",")} leafs=${(body.leafIds || []).join(",") || "-"} total=${allSkus.length} pageSize=${pageSize}`
+      );
+
+      if (skus.length === 0) {
+        return {
+          status: 200,
+          headers: CORS,
+          jsonBody: {
+            ok: true,
+            where: "empty",
+            selectedCategoryIds: ids,
+            usedLeafIds: body.leafIds ?? [],
+            restrictedToSkus: body.restrictSkus?.length ?? 0,
+            pageSize,
+            processedSkus: 0,
+            totalSkus: allSkus.length,
+            remainingSkus,
+            hasMore: remainingSkus > 0,
+            exists: 0,
+            created: 0,
+            updatedWithMeta: 0,
+            invalidImageUrls: 0,
+            createFailedSkus: [],
+            updateFailedIds: [],
+            sampleSkus: [],
+          },
+        };
+      }
 
       /* 2) Basdata från Britpart (GetAll först) */
       where = "fetch-basics";
@@ -159,7 +225,7 @@ app.http("import-run", {
       const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
       ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, validImages=${imgOkCount}`);
 
-      /* 3) Finns redan i Woo? */
+      /* 3) Finns redan i Woo? (parallellt, throttlat) */
       where = "lookup-existing";
       const existing = new Map<string, number>();
       {
@@ -191,7 +257,8 @@ app.http("import-run", {
         if (b.imageUrl) meta.push({ key: "_lr_source_image_url", value: b.imageUrl });
         if (c) meta.push({ key: "_lr_source_image_canon", value: c });
         if ((b as any).imageSource) meta.push({ key: "_lr_source", value: (b as any).imageSource });
-        if (Array.isArray(b.categoryIds)) meta.push({ key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) });
+        if (Array.isArray(b.categoryIds))
+          meta.push({ key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) });
 
         const cats = wcCatsFromBritpartCategoryIds((b as any).categoryIds);
 
@@ -228,7 +295,9 @@ app.http("import-run", {
               const meta = Array.isArray(prod?.meta_data) ? prod.meta_data : [];
               const canonMeta = meta.find((m: any) => m?.key === "_lr_source_image_canon")?.value;
               existingMetaById.set(pid, { canon: typeof canonMeta === "string" ? canonMeta : undefined });
-            } catch { /* ignore */ }
+            } catch {
+              /* ignore */
+            }
           }
         }
         await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, existingById.length)) }, worker));
@@ -245,7 +314,8 @@ app.http("import-run", {
         const id = idExisting ?? idCreated;
         if (!id) continue;
 
-        const b = (basics as any)[sku]; if (!b) continue;
+        const b = (basics as any)[sku];
+        if (!b) continue;
         const wasCreatedNow = !!idCreated && !idExisting;
 
         const u: WooUpdate = { id };
@@ -253,7 +323,10 @@ app.http("import-run", {
         // Namn/beskrivning – bra även för existerande, men onödigt direkt efter create
         if (!wasCreatedNow) {
           if (b.title) u.name = b.title;
-          if (b.description) { u.description = b.description; u.short_description = b.description; }
+          if (b.description) {
+            u.description = b.description;
+            u.short_description = b.description;
+          }
         }
 
         // Bild – undvik resideload om canon inte ändrats
@@ -267,7 +340,9 @@ app.http("import-run", {
               { key: "_lr_source_image_url", value: b.imageUrl },
               { key: "_lr_source_image_canon", value: newCanon },
               ...(b as any).imageSource ? [{ key: "_lr_source", value: (b as any).imageSource }] : [],
-              Array.isArray(b.categoryIds) ? { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) } : null,
+              Array.isArray(b.categoryIds)
+                ? { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) }
+                : null,
             ].filter(Boolean);
           } else if (b.imageUrl && !newCanon) {
             invalidImageUrls++;
@@ -284,7 +359,14 @@ app.http("import-run", {
           ];
         }
 
-        if (u.name || u.images || u.description || u.short_description || (u as any).categories || (u as any).meta_data) {
+        if (
+          u.name ||
+          u.images ||
+          u.description ||
+          u.short_description ||
+          (u as any).categories ||
+          (u as any).meta_data
+        ) {
           updates.push(u);
         }
       }
@@ -300,6 +382,8 @@ app.http("import-run", {
           ok: true,
           where: "done",
           selectedCategoryIds: ids,
+          usedLeafIds: body.leafIds ?? [],
+          restrictedToSkus: body.restrictSkus?.length ?? 0,
           pageSize,
           processedSkus: skus.length,
           totalSkus: allSkus.length,

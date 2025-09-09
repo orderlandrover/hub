@@ -257,6 +257,50 @@ async function collectLeavesFrom(catId: number, seen: Set<number>, out: Map<numb
   }
 }
 
+export async function britpartCollectLeafCodes(
+  categoryIds: number[]
+): Promise<Map<number, string[]>> {
+  clearBritpartCategoryCache();
+  const seen = new Set<number>();
+  const out = new Map<number, string[]>();
+
+  async function walk(id: number, depth = 0) {
+    if (seen.has(id) || depth > 16) return;
+    seen.add(id);
+    const cat = await loadCat(id);
+
+    if (Array.isArray(cat.partCodes) && cat.partCodes.length) {
+      const prev = out.get(cat.id) ?? [];
+      const merged = Array.from(new Set([...prev, ...cat.partCodes]));
+      out.set(cat.id, merged);
+    }
+
+    const kids = [
+      ...(cat.subcategories?.map(s => Number(s.id)) ?? []),
+      ...(cat.subcategoryIds ?? []),
+    ];
+    for (const kid of kids) await walk(kid, depth + 1);
+  }
+
+  for (const root of categoryIds) await walk(Number(root), 0);
+  return out;
+}
+
+export async function britpartGetPartCodesForCategoriesFiltered(
+  categoryIds: number[],
+  onlyLeafIds?: number[]
+): Promise<string[]> {
+  if (!onlyLeafIds?.length) {
+    return britpartGetPartCodesForCategories(categoryIds);
+  }
+  const map = await britpartCollectLeafCodes(categoryIds);
+  const set = new Set<string>();
+  for (const id of onlyLeafIds) {
+    for (const c of map.get(Number(id)) ?? []) if (c) set.add(String(c));
+  }
+  return Array.from(set);
+}
+
 export async function britpartCollectLeaves(categoryIds: number[]): Promise<LeafInfo[]> {
   clearBritpartCategoryCache();
   const seen = new Set<number>();
