@@ -9,7 +9,6 @@ import {
   wcPostJSON,
   wcPutJSON,
   wcGetJSON,
-  WooCreate,
   WooUpdate,
 } from "../shared/wc";
 
@@ -33,6 +32,32 @@ const canon = (u?: string) => {
   if (!u) return null;
   try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return null; }
 };
+
+/* --------------------------------------------------------------- */
+/* Britpart→Woo kategori-mappning                                  */
+/* --------------------------------------------------------------- */
+/**
+ * Fyll på denna med dina riktiga Woo-kategori-IDn.
+ * Key = Britpart categoryId (leaf eller ej), value = Woo categoryId.
+ * Exempel: { 58: 123, 57: 124 }
+ */
+const BRITPART_TO_WC: Record<number, number> = {
+  // TODO: fyll på dina riktiga mappningar här
+  // 58: 123,
+  // 57: 124,
+};
+
+function wcCatsFromBritpartCategoryIds(categoryIds?: number[]): { id: number }[] | undefined {
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) return undefined;
+  const mapped = Array.from(
+    new Set(
+      categoryIds
+        .map((cid) => BRITPART_TO_WC[cid])
+        .filter((n): n is number => typeof n === "number" && n > 0)
+    )
+  );
+  return mapped.length ? mapped.map((id) => ({ id })) : undefined;
+}
 
 /* --------------------------------------------------------------- */
 /* Batch helpers (med fallback per item)                           */
@@ -156,7 +181,7 @@ app.http("import-run", {
       }
       ctx.log?.(`lookup-existing: exists=${existing.size} / page=${skus.length}`);
 
-      /* 4) Skapa saknade (draft) – sätt bild + meta om vi har det */
+      /* 4) Skapa saknade (draft) – sätt bild + meta + (ev.) kategorier */
       where = "create";
       const toCreateSkus = skus.filter((s) => !existing.has(s));
       const createPayloads: any[] = toCreateSkus.map((sku) => {
@@ -166,6 +191,9 @@ app.http("import-run", {
         if (b.imageUrl) meta.push({ key: "_lr_source_image_url", value: b.imageUrl });
         if (c) meta.push({ key: "_lr_source_image_canon", value: c });
         if ((b as any).imageSource) meta.push({ key: "_lr_source", value: (b as any).imageSource });
+        if (Array.isArray(b.categoryIds)) meta.push({ key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) });
+
+        const cats = wcCatsFromBritpartCategoryIds((b as any).categoryIds);
 
         const payload: any = {
           name: (b.title && b.title.trim()) || sku,
@@ -177,6 +205,8 @@ app.http("import-run", {
           meta_data: meta.length ? meta : undefined,
         };
         if (validImage(b.imageUrl)) payload.images = [{ src: b.imageUrl, position: 0 }];
+        if (cats) payload.categories = cats;
+
         return payload;
       });
 
@@ -215,7 +245,7 @@ app.http("import-run", {
         const id = idExisting ?? idCreated;
         if (!id) continue;
 
-        const b = basics[sku]; if (!b) continue;
+        const b = (basics as any)[sku]; if (!b) continue;
         const wasCreatedNow = !!idCreated && !idExisting;
 
         const u: WooUpdate = { id };
@@ -237,13 +267,24 @@ app.http("import-run", {
               { key: "_lr_source_image_url", value: b.imageUrl },
               { key: "_lr_source_image_canon", value: newCanon },
               ...(b as any).imageSource ? [{ key: "_lr_source", value: (b as any).imageSource }] : [],
-            ];
+              Array.isArray(b.categoryIds) ? { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) } : null,
+            ].filter(Boolean);
           } else if (b.imageUrl && !newCanon) {
             invalidImageUrls++;
           }
         }
 
-        if (u.name || u.images || u.description || u.short_description || (u as any).meta_data) {
+        // Kategorier – sätts även på existerande om mappning finns (och inte skapad just nu)
+        const cats = wcCatsFromBritpartCategoryIds(b.categoryIds);
+        if (!wasCreatedNow && cats) {
+          (u as any).categories = cats;
+          (u as any).meta_data = [
+            ...(((u as any).meta_data as any[]) ?? []),
+            { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) },
+          ];
+        }
+
+        if (u.name || u.images || u.description || u.short_description || (u as any).categories || (u as any).meta_data) {
           updates.push(u);
         }
       }

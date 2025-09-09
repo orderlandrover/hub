@@ -46,6 +46,9 @@ export type WooUpdate = {
   short_description?: string;
   images?: WooImage[];
   meta_data?: WooMeta[];
+
+  // 🔸 NYTT: möjliggör uppdatering av kategorier på existerande produkter
+  categories?: { id: number }[];
 };
 
 export type WooCreate = {
@@ -155,7 +158,8 @@ export async function wcPutJSON<T = any>(path: string, payload: any): Promise<T>
 
 /** Hämta produkt via SKU → returnera första träffen eller null */
 export async function wcFindProductIdBySku(sku: string): Promise<number | null> {
-  const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}`);
+  // per_page=1 gör svaret lite snabbare och mindre
+  const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}&per_page=1`);
   if (!res.ok) return null;
   const arr = await readJsonSafe<any[]>(res);
   if (Array.isArray(arr) && arr[0]?.id) return Number(arr[0].id);
