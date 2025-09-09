@@ -1,6 +1,9 @@
 // api/britpart-probe-categories/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartCollectLeaves, britpartGetPartCodesForCategories } from "../shared/britpart";
+import {
+  britpartCollectLeaves,
+  britpartGetPartCodesForCategories,
+} from "../shared/britpart";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -8,15 +11,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
 
-const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
-
-function parseIdsCsv(s: string | null | undefined): number[] {
-  if (!s) return [];
-  return s
-    .split(",")
-    .map((x) => Number(x.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0);
-}
+const emsg = (e: unknown) => (e && typeof (e as any).message === "string" ? String((e as any).message) : String(e));
 
 app.http("britpart-probe-categories", {
   route: "britpart-probe-categories",
@@ -26,67 +21,62 @@ app.http("britpart-probe-categories", {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
     try {
-      let ids: number[] = [];
-      let limit = 5;
+      let ids: number[] | null = null;
 
       if (req.method === "GET") {
-        // Stöd för snabb test: /api/britpart-probe-categories?ids=40,44&limit=5
-        ids = parseIdsCsv(req.query.get("ids")) || parseIdsCsv(req.query.get("id"));
-        const qLimit = Number(req.query.get("limit") || "5");
-        if (Number.isFinite(qLimit)) limit = qLimit;
+        const q = (req.query.get("ids") || "").trim();
+        if (q) {
+          ids = q
+            .split(/[,\s]+/)
+            .map((s: string) => Number(s))
+            .filter((n: number) => Number.isFinite(n));
+        }
       } else {
-        // POST body: { ids: number[], limit?: number }
-        const body = (await req.json().catch(() => null)) as any | null;
-        if (body && Array.isArray(body.ids)) {
-          ids = body.ids.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0);
-        }
-        if (body && body.limit !== undefined) {
-          const bLimit = Number(body.limit);
-          if (Number.isFinite(bLimit)) limit = bLimit;
+        const raw: unknown = await req.json().catch(() => null);
+        const body = (raw && typeof raw === "object" ? (raw as { ids?: unknown }) : {});
+        if (Array.isArray(body.ids)) {
+          ids = (body.ids as unknown[])
+            .map((v: unknown) => Number(v as any))
+            .filter((n: number) => Number.isFinite(n));
         }
       }
 
-      if (!ids.length) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
+      if (!ids || ids.length === 0) {
+        return {
+          status: 400,
+          headers: CORS,
+          jsonBody: { ok: false, error: "Missing 'ids' (array of numbers)" },
+        };
       }
 
-      // Rimliga gränser
-      limit = Math.min(Math.max(limit, 1), 50);
+      ctx.log?.(`probe-categories: ids=${ids.join(", ")}`);
 
-      // 1) Hämta blad (kategorier som faktiskt har partCodes) för transparens
-      const leavesRaw = await britpartCollectLeaves(ids); // [{ id, title?, count, sample:string[] }]
-      const leaves = leavesRaw
-        .map((l) => ({
-          id: l.id,
-          title: l.title,
-          count: Number(l.count) || 0,
-          sample: Array.isArray(l.sample) ? l.sample.slice(0, limit) : [],
-        }))
-        .sort((a, b) => b.count - a.count);
-
-      // 2) Union av unika SKU:er (samma som import-run använder)
+      // 1) Alla unika SKU under valda rötter
       const allCodes = await britpartGetPartCodesForCategories(ids);
-      const totalSkus = allCodes.length;
-      const sampleSkus = allCodes.slice(0, Math.min(10, limit));
+      const uniqueSkuCount = new Set(allCodes).size;
+      const sampleAll = allCodes.slice(0, 10);
 
-      ctx.log?.(
-        `probe: roots=[${ids.join(", ")}] leaves=${leaves.length} totalSkus=${totalSkus} limit=${limit}`
-      );
+      // 2) Leaf-noder med counts + samples
+      const leavesRaw = await britpartCollectLeaves(ids);
+      const leaves = leavesRaw
+        .map((l) => ({ leafId: l.id, count: l.count, sampleSkus: l.sample }))
+        .sort((a, b) => b.count - a.count);
 
       return {
         status: 200,
         headers: CORS,
         jsonBody: {
           ok: true,
-          roots: ids,
-          totalSkus,
-          totalLeaves: leaves.length,
+          inputIds: ids,
+          uniqueSkuCount,
           leaves,
-          sampleSkus,
+          sampleAll,
         },
       };
-    } catch (e: any) {
-      return { status: 500, headers: CORS, jsonBody: { ok: false, error: emsg(e) } };
+    } catch (e: unknown) {
+      const msg = emsg(e);
+      ctx.error?.(msg);
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: msg } };
     }
   },
 });
