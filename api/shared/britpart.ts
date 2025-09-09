@@ -1,9 +1,25 @@
-// api/shared/britpart.ts
 import { env } from "./env";
 
 /** Bas och token */
 const BRITPART_BASE = (env.BRITPART_BASE || "").replace(/\/+$/, "");
 const BRITPART_TOKEN = env.BRITPART_TOKEN || "";
+
+/* --------------------------------------------------------------- */
+/* Tunables (kan även styras via ENV)                              */
+/* --------------------------------------------------------------- */
+
+// tillåt läsning från både env-objektet och process.env utan TS-bråk
+const ENV_ANY = env as Record<string, unknown>;
+
+const DEFAULT_CONCURRENCY = Math.max(
+  1,
+  Number(ENV_ANY.BRITPART_CONCURRENCY ?? process.env.BRITPART_CONCURRENCY ?? 6)
+);
+
+const THROTTLE_MS = Math.max(
+  0,
+  Number(ENV_ANY.BRITPART_THROTTLE_MS ?? process.env.BRITPART_THROTTLE_MS ?? 120)
+);
 
 /* ----------------------------- Typer ----------------------------- */
 
@@ -38,7 +54,7 @@ export type BritpartBasic = {
     | "link:image_src"
     | "html:img"
     | "none";
-  /** Nytt: för debugging/filtrering */
+  /** För debugging/filtrering */
   categoryIds?: number[];
   url?: string;
 };
@@ -151,12 +167,12 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
 }
 
 export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
+  // Vissa instanser vill ha "categoryId" – prova den först
   const tryOne = async (param: "id" | "categoryId") => {
     const res = await britpartFetchRaw(`/part/getcategories?${param}=${Number(categoryId)}`);
     const json = await safeJson(res);
     return normalizeCategory(json);
   };
-  // Viktigt: börja med categoryId; om backend ignorerar "id" men svarar 200 blir det fel.
   try { return await tryOne("categoryId"); } catch { return await tryOne("id"); }
 }
 
@@ -257,6 +273,18 @@ async function collectLeavesFrom(catId: number, seen: Set<number>, out: Map<numb
   }
 }
 
+export async function britpartCollectLeaves(categoryIds: number[]): Promise<LeafInfo[]> {
+  clearBritpartCategoryCache();
+  const seen = new Set<number>();
+  const map = new Map<number, LeafInfo>();
+  for (const id of categoryIds) {
+    await collectLeavesFrom(Number(id), seen, map, 0);
+  }
+  return Array.from(map.values()).sort((a, b) => a.id - b.id);
+}
+
+/* Leafs → partCodes (per leaf id) */
+
 export async function britpartCollectLeafCodes(
   categoryIds: number[]
 ): Promise<Map<number, string[]>> {
@@ -286,6 +314,7 @@ export async function britpartCollectLeafCodes(
   return out;
 }
 
+/** Filtrerad insamling: bara specificerade leaf-IDs */
 export async function britpartGetPartCodesForCategoriesFiltered(
   categoryIds: number[],
   onlyLeafIds?: number[]
@@ -299,16 +328,6 @@ export async function britpartGetPartCodesForCategoriesFiltered(
     for (const c of map.get(Number(id)) ?? []) if (c) set.add(String(c));
   }
   return Array.from(set);
-}
-
-export async function britpartCollectLeaves(categoryIds: number[]): Promise<LeafInfo[]> {
-  clearBritpartCategoryCache();
-  const seen = new Set<number>();
-  const map = new Map<number, LeafInfo>();
-  for (const id of categoryIds) {
-    await collectLeavesFrom(Number(id), seen, map, 0);
-  }
-  return Array.from(map.values()).sort((a, b) => a.id - b.id);
 }
 
 /* ----------------------------- GET /part/getall ----------------------------- */
@@ -415,7 +434,7 @@ async function basicFromFallback(sku: string): Promise<BritpartBasic> {
 
 export async function britpartGetBasicForSkus(
   skus: string[],
-  concurrency = 10
+  concurrency = DEFAULT_CONCURRENCY
 ): Promise<Record<string, BritpartBasic>> {
   const map: Record<string, BritpartBasic> = {};
   let i = 0;
@@ -429,6 +448,7 @@ export async function britpartGetBasicForSkus(
       } catch {
         map[sku] = { sku, title: sku, imageSource: "none" };
       }
+      if (THROTTLE_MS > 0) await sleep(THROTTLE_MS);
     }
   }
 

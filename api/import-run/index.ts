@@ -171,8 +171,8 @@ app.http("import-run", {
       }
 
       // Begränsa per körning (skydd mot timeout 500)
-      const PAGE_MAX = 500;
-      const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 200), PAGE_MAX));
+      const PAGE_MAX = 50;
+      const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 25), PAGE_MAX));
 
       /* 1) Samla SKU (unika) – via valda rötter + ev. leaf-filter och/eller explicit restrictSkus */
       where = "collect-skus";
@@ -230,7 +230,7 @@ app.http("import-run", {
       const existing = new Map<string, number>();
       {
         let i = 0;
-        const conc = 10;
+        const conc = 6;
         async function worker() {
           while (i < skus.length) {
             const idx = i++;

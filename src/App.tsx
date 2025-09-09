@@ -214,7 +214,7 @@ function WooCategoriesPanel() {
           type="number"
           className="w-24 border border-gray-300 rounded-xl px-3 py-1.5 text-sm"
           value={perPage}
-          onChange={(e) => setPerPage(Math.max(10, Number(e.target.value) || 50))}
+          onChange={(e) => setPerPage(Math.max(5, Number(e.target.value) || 25))}
         />
         <Badge>Totalt: {data?.total ?? "–"}</Badge>
       </div>
@@ -273,7 +273,7 @@ export default function App() {
   const [selected, setSelected] = useState<number[]>([]);
 
   // formulär-state
-  const [perPage, setPerPage] = useState<number>(200);
+  const [perPage, setPerPage] = useState<number>(25);
   const [roundingMode, setRoundingMode] = useState<RoundModeUI>("none");
   const [roundTo, setRoundTo] = useState<number>(1);
   const [isImporting, setIsImporting] = useState(false);
