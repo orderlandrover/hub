@@ -5,9 +5,7 @@ import { env } from "./env";
 const BRITPART_BASE = (env.BRITPART_BASE || "").replace(/\/+$/, "");
 const BRITPART_TOKEN = env.BRITPART_TOKEN || "";
 
-/* --------------------------------------------------------------- */
-/* Typer                                                           */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Typer ----------------------------- */
 
 export type BritpartCategoryResponse = {
   id: number;
@@ -23,14 +21,12 @@ export type BritpartCategoryResponse = {
   }>;
 };
 
-/** Data vi exponerar uppåt (titel/bild/description + källa) */
+/** Data vi exponerar uppåt */
 export type BritpartBasic = {
   sku: string;
   title?: string;
-  description?: string;        // HTML från Britpart (content + ev. subText)
-  imageUrl?: string;           // presigned S3-URL eller absolut http(s)
-  url?: string;                // publika produktsidan hos Britpart (om känd)
-  categoryIds?: number[];      // <-- NYTT: för probe / kontroll
+  description?: string;   // HTML
+  imageUrl?: string;
   imageSource?:
     | "getall.imageUrls[0]"
     | "getall.imageUrls[n]"
@@ -42,16 +38,19 @@ export type BritpartBasic = {
     | "link:image_src"
     | "html:img"
     | "none";
+  /** Nytt: för debugging/filtrering */
+  categoryIds?: number[];
+  url?: string;
 };
 
-/** GetAll-schema (sammandrag) enligt deras docs */
+/** GetAll-schema (sammandrag) */
 export type GetAllPart = {
   code: string;
   title?: string;
-  content?: string;        // HTML
-  subText?: string;        // HTML
+  content?: string;
+  subText?: string;
   url?: string;
-  imageUrls?: string[];    // presigned S3 eller publika
+  imageUrls?: string[];
   datePublished?: string;
   similarParts?: string[];
   categoryIds?: number[];
@@ -64,9 +63,7 @@ export type GetAllResponse = {
   parts: GetAllPart[];
 };
 
-/* --------------------------------------------------------------- */
-/* Helpers                                                         */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Helpers ----------------------------- */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,7 +73,7 @@ function ensureConfigured() {
   }
 }
 
-async function safeJson<T = any>(res: Response): Promise<T> {
+export async function safeJson<T = any>(res: Response): Promise<T> {
   const txt = await res.text();
   try {
     return JSON.parse(txt) as T;
@@ -87,16 +84,10 @@ async function safeJson<T = any>(res: Response): Promise<T> {
 
 function toAbs(u?: string): string | undefined {
   if (!u) return undefined;
-  try {
-    return new URL(u, BRITPART_BASE).toString();
-  } catch {
-    return undefined;
-  }
+  try { return new URL(u, BRITPART_BASE).toString(); } catch { return undefined; }
 }
 
-/* --------------------------------------------------------------- */
-/* Lågnivå fetch med backoff                                       */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Lågnivå fetch ----------------------------- */
 
 async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   ensureConfigured();
@@ -107,7 +98,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
     "Content-Type": "application/json",
-    Token: BRITPART_TOKEN, // token via header
+    Token: BRITPART_TOKEN,  // token i header
   };
 
   let lastErr: any;
@@ -115,8 +106,7 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
     try {
       const res = await fetch(url, { ...init, headers });
       if (res.ok) return res;
-
-      if (res.status === 429 || res.status >= 500) {
+      if (res.status >= 500 || res.status === 429) {
         await sleep(400 + attempt * 300);
         continue;
       }
@@ -130,12 +120,9 @@ async function britpartFetchRaw(path: string, init?: RequestInit): Promise<Respo
   throw lastErr ?? new Error("Britpart call failed");
 }
 
-/** Exporteras ibland separat */
 export { britpartFetchRaw as britpartFetch };
 
-/* --------------------------------------------------------------- */
-/* Kategorier                                                      */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Kategorier ----------------------------- */
 
 function normalizeCategory(raw: any): BritpartCategoryResponse {
   const obj = raw?.items ?? raw ?? {};
@@ -164,16 +151,13 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
 }
 
 export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
+  // Prova båda parameternamnen – deras API har varierat i dokumentation
   const tryOne = async (param: "id" | "categoryId") => {
     const res = await britpartFetchRaw(`/part/getcategories?${param}=${Number(categoryId)}`);
     const json = await safeJson(res);
     return normalizeCategory(json);
   };
-  try {
-    return await tryOne("id");
-  } catch {
-    return await tryOne("categoryId");
-  }
+  try { return await tryOne("id"); } catch { return await tryOne("categoryId"); }
 }
 
 export async function getRootCategories(): Promise<BritpartCategoryResponse> {
@@ -187,45 +171,49 @@ export async function getDirectSubcategories(
   return parent.subcategories ?? [];
 }
 
-/* --------------------------------------------------------------- */
-/* Part codes (rekursivt)                                          */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Rekursiv kodinsamling ----------------------------- */
 
 const catCache = new Map<number, BritpartCategoryResponse>();
+export function clearBritpartCategoryCache() { catCache.clear(); }
 
+async function loadCat(id: number): Promise<BritpartCategoryResponse> {
+  const cached = catCache.get(id);
+  if (cached) return cached;
+  const c = await getCategory(id);
+  catCache.set(id, c);
+  return c;
+}
+
+/** Samla alla partCodes som ligger under en kategori (rekursivt). */
 async function collectPartCodesFrom(
-  catId: number,
-  seen: Set<number>,
-  depth = 0
+  catId: number, seen: Set<number>, depth = 0
 ): Promise<string[]> {
   if (seen.has(catId)) return [];
   seen.add(catId);
-  if (depth > 12) return [];
+  if (depth > 16) return [];
 
-  let cat = catCache.get(catId);
-  if (!cat) {
-    cat = await getCategory(catId);
-    catCache.set(catId, cat);
-  }
+  const cat = await loadCat(catId);
 
   const out: string[] = [];
   if (Array.isArray(cat.partCodes)) out.push(...cat.partCodes);
 
+  // Rekurs över inbäddade subcategories
   if (Array.isArray(cat.subcategories)) {
     for (const sc of cat.subcategories) {
       if (Array.isArray(sc.partCodes)) out.push(...sc.partCodes);
-      out.push(...(await collectPartCodesFrom(Number(sc.id), seen, depth + 1)));
+      out.push(...await collectPartCodesFrom(Number(sc.id), seen, depth + 1));
       if (Array.isArray(sc.subcategoryIds)) {
         for (const subId of sc.subcategoryIds) {
-          out.push(...(await collectPartCodesFrom(Number(subId), seen, depth + 1)));
+          out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
         }
       }
     }
   }
 
+  // Och över “länkat” id-fält
   if (Array.isArray(cat.subcategoryIds)) {
     for (const subId of cat.subcategoryIds) {
-      out.push(...(await collectPartCodesFrom(Number(subId), seen, depth + 1)));
+      out.push(...await collectPartCodesFrom(Number(subId), seen, depth + 1));
     }
   }
 
@@ -233,35 +221,72 @@ async function collectPartCodesFrom(
 }
 
 export async function britpartGetPartCodesForCategories(categoryIds: number[]): Promise<string[]> {
+  clearBritpartCategoryCache();
   const seen = new Set<number>();
   const all: string[] = [];
-  for (const id of categoryIds) {
-    all.push(...(await collectPartCodesFrom(Number(id), seen, 0)));
-  }
+  for (const id of categoryIds) all.push(...await collectPartCodesFrom(Number(id), seen, 0));
   return Array.from(new Set(all.filter((s) => typeof s === "string" && s.trim().length > 0)));
 }
 
-/* --------------------------------------------------------------- */
-/* GET /part/getall                                                */
-/* --------------------------------------------------------------- */
+/* --------- Hjälpare: hitta “blad” (kategorier som faktiskt har partCodes) -------- */
 
-/** GetAll enligt dokumentationen (code = exakt part code / sök) */
+export type LeafInfo = { id: number; title?: string; count: number; sample: string[] };
+
+async function collectLeavesFrom(catId: number, seen: Set<number>, out: Map<number, LeafInfo>, depth = 0) {
+  if (seen.has(catId)) return;
+  seen.add(catId);
+  if (depth > 16) return;
+
+  const cat = await loadCat(catId);
+
+  const codes = Array.isArray(cat.partCodes) ? cat.partCodes : [];
+  const childrenIds = [
+    ...(cat.subcategories?.map(s => Number(s.id)) ?? []),
+    ...(cat.subcategoryIds ?? []),
+  ];
+
+  if (codes.length > 0) {
+    const prev = out.get(cat.id);
+    if (!prev) {
+      out.set(cat.id, { id: cat.id, title: cat.title, count: codes.length, sample: codes.slice(0, 5) });
+    } else {
+      // om samma blad råkar dyka upp flera gånger, summera
+      prev.count += codes.length;
+      prev.sample = Array.from(new Set([...prev.sample, ...codes])).slice(0, 5);
+    }
+  }
+
+  for (const childId of childrenIds) {
+    await collectLeavesFrom(childId, seen, out, depth + 1);
+  }
+}
+
+export async function britpartCollectLeaves(categoryIds: number[]): Promise<LeafInfo[]> {
+  clearBritpartCategoryCache();
+  const seen = new Set<number>();
+  const map = new Map<number, LeafInfo>();
+  for (const id of categoryIds) {
+    await collectLeavesFrom(Number(id), seen, map, 0);
+  }
+  return Array.from(map.values()).sort((a, b) => a.id - b.id);
+}
+
+/* ----------------------------- GET /part/getall ----------------------------- */
+
 export async function britpartGetAll(params: {
   page?: number;
-  code?: string;                  // exakt SKU (kan vara “sök” hos Britpart)
-  modifiedSince?: string | Date;  // ISO 8601
+  code?: string;
+  modifiedSince?: string | Date;
 }): Promise<GetAllResponse> {
   const usp = new URLSearchParams();
   if (params.page) usp.set("page", String(params.page));
   if (params.code) usp.set("code", String(params.code));
   if (params.modifiedSince) {
-    const iso =
-      typeof params.modifiedSince === "string"
-        ? params.modifiedSince
-        : (params.modifiedSince as Date).toISOString();
+    const iso = typeof params.modifiedSince === "string"
+      ? params.modifiedSince
+      : (params.modifiedSince as Date).toISOString();
     usp.set("modifiedSince", iso);
   }
-  // token via header; (de accepterar även query-param, men header är redan satt)
   const res = await britpartFetchRaw(`/part/getall?${usp.toString()}`);
   return safeJson<GetAllResponse>(res);
 }
@@ -269,80 +294,57 @@ export async function britpartGetAll(params: {
 /** Hämta titel/bild/description för EN SKU via GetAll, med fallback. */
 async function basicFromGetAll(code: string): Promise<BritpartBasic> {
   try {
-    const r = await britpartGetAll({ code }); // filtrerat på SKU
-    const parts = Array.isArray(r?.parts) ? r.parts : [];
-    const exact =
-      parts.find((p) => (p.code || "").toLowerCase() === code.toLowerCase()) || parts[0];
+    const r = await britpartGetAll({ code });
+    const part =
+      (r?.parts || []).find(p => (p.code || "").toLowerCase() === code.toLowerCase()) ||
+      (r?.parts || [])[0];
 
-    if (exact) {
-      const html = [exact.content || "", exact.subText || ""]
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-
-      const firstImg =
-        Array.isArray(exact.imageUrls) && exact.imageUrls.length ? exact.imageUrls[0] : undefined;
-
+    if (part) {
+      const html = [part.content || "", part.subText || ""].filter(Boolean).join("\n");
+      const img = Array.isArray(part.imageUrls) && part.imageUrls.length ? part.imageUrls[0] : undefined;
       return {
         sku: code,
-        title: exact.title || code,
+        title: part.title || code,
         description: html || undefined,
-        imageUrl: firstImg,
-        url: exact.url,
-        categoryIds: Array.isArray(exact.categoryIds)
-          ? exact.categoryIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-          : undefined,
-        imageSource: firstImg ? "getall.imageUrls[0]" : "none",
+        imageUrl: img,
+        imageSource: img ? "getall.imageUrls[0]" : "none",
+        categoryIds: Array.isArray(part.categoryIds) ? part.categoryIds : undefined,
+        url: part.url,
       };
     }
   } catch {
-    // Ignorera och prova fallback
+    // gå vidare till fallback
   }
   return await basicFromFallback(code);
 }
 
-/* --------------------------------------------------------------- */
-/* Fallback: publik sida (og:image / twitter / link / img)         */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Fallback (öppna sidan) ----------------------------- */
 
-type OgPick =
-  | { imageUrl?: string; title?: string; source?: BritpartBasic["imageSource"] }
-  | {};
-
-async function fetchOgMeta(url: string): Promise<OgPick> {
+async function fetchOgMeta(url: string): Promise<Partial<BritpartBasic>> {
   try {
     const res = await fetch(url);
     if (!res.ok) return {};
     const html = await res.text();
 
-    const pickMeta = (prop: string, attr = "property") => {
-      const re = new RegExp(
-        `<meta[^>]+${attr}=["']${prop}["'][^>]+content=["']([^"']+)["']`,
-        "i"
-      );
+    const meta = (prop: string, attr = "property") => {
+      const re = new RegExp(`<meta[^>]+${attr}=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i");
       return re.exec(html)?.[1];
     };
-    const pickLink = (rel: string) => {
+    const link = (rel: string) => {
       const re = new RegExp(`<link[^>]+rel=["']${rel}["'][^>]+href=["']([^"']+)["']`, "i");
       return re.exec(html)?.[1];
     };
-    const title =
-      pickMeta("og:title") || pickMeta("twitter:title", "name") || undefined;
 
-    // prio-ordning och källa
-    const og = pickMeta("og:image");
-    if (og) return { title, imageUrl: toAbs(og), source: "og:image" };
+    const title = meta("og:title") || meta("twitter:title", "name") || undefined;
+    const candidates: (string | undefined)[] = [
+      meta("og:image"),
+      meta("twitter:image", "name"),
+      link("image_src"),
+      (/<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] ?? undefined),
+    ];
 
-    const tw = pickMeta("twitter:image", "name");
-    if (tw) return { title, imageUrl: toAbs(tw), source: "twitter:image" };
-
-    const linkImg = pickLink("image_src");
-    if (linkImg) return { title, imageUrl: toAbs(linkImg), source: "link:image_src" };
-
-    const imgTag = /<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1];
-    if (imgTag) return { title, imageUrl: toAbs(imgTag), source: "html:img" };
-
-    return { title };
+    const first = candidates.find(Boolean);
+    return { title, imageUrl: toAbs(first) };
   } catch {
     return {};
   }
@@ -355,26 +357,21 @@ async function basicFromFallback(sku: string): Promise<BritpartBasic> {
     `${BRITPART_BASE}/parts/${encodeURIComponent(sku)}`,
     `${BRITPART_BASE}/products/${encodeURIComponent(sku)}`,
   ];
-
   for (const u of pages) {
     const meta = await fetchOgMeta(u);
-    if ((meta as any).imageUrl || (meta as any).title) {
-      const m = meta as OgPick & { imageUrl?: string; title?: string; source?: BritpartBasic["imageSource"] };
+    if (meta.imageUrl || meta.title) {
       return {
         sku,
-        title: m.title ?? sku,
-        imageUrl: m.imageUrl,
-        url: u,
-        imageSource: m.imageUrl ? (m.source ?? "og:image") : "none",
+        title: meta.title ?? sku,
+        imageUrl: meta.imageUrl,
+        imageSource: meta.imageUrl ? "og:image" : "none",
       };
     }
   }
   return { sku, title: sku, imageSource: "none" };
 }
 
-/* --------------------------------------------------------------- */
-/* Publik multi-funktion                                           */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Multi ----------------------------- */
 
 export async function britpartGetBasicForSkus(
   skus: string[],
@@ -388,7 +385,6 @@ export async function britpartGetBasicForSkus(
       const idx = i++;
       const sku = skus[idx];
       try {
-        // Försök GetAll först, fallback om tomt
         map[sku] = await basicFromGetAll(sku);
       } catch {
         map[sku] = { sku, title: sku, imageSource: "none" };
@@ -402,9 +398,7 @@ export async function britpartGetBasicForSkus(
   return map;
 }
 
-/* --------------------------------------------------------------- */
-/* Bakåtkompatibelt hjälp-API                                      */
-/* --------------------------------------------------------------- */
+/* ----------------------------- Bakåtkomp ----------------------------- */
 
 export type BritpartImportItem = {
   sku: string;
@@ -415,9 +409,7 @@ export type BritpartImportItem = {
   categoryId?: number;
 };
 
-export async function britpartGetByCategories(
-  categoryIds: number[]
-): Promise<BritpartImportItem[]> {
+export async function britpartGetByCategories(categoryIds: number[]): Promise<BritpartImportItem[]> {
   const codes = await britpartGetPartCodesForCategories(categoryIds);
   return codes.map((sku) => ({ sku }));
 }
