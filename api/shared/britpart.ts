@@ -151,17 +151,13 @@ function normalizeCategory(raw: any): BritpartCategoryResponse {
 }
 
 export async function getCategory(categoryId: number): Promise<BritpartCategoryResponse> {
-  // Prova båda parameternamnen – deras API har varierat i dokumentation
   const tryOne = async (param: "id" | "categoryId") => {
     const res = await britpartFetchRaw(`/part/getcategories?${param}=${Number(categoryId)}`);
     const json = await safeJson(res);
     return normalizeCategory(json);
   };
-  try { return await tryOne("id"); } catch { return await tryOne("categoryId"); }
-}
-
-export async function getRootCategories(): Promise<BritpartCategoryResponse> {
-  return getCategory(3);
+  // Viktigt: börja med categoryId; om backend ignorerar "id" men svarar 200 blir det fel.
+  try { return await tryOne("categoryId"); } catch { return await tryOne("id"); }
 }
 
 export async function getDirectSubcategories(

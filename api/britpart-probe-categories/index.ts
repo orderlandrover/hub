@@ -3,6 +3,7 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import {
   britpartCollectLeaves,
   britpartGetPartCodesForCategories,
+  getCategory,
 } from "../shared/britpart";
 
 const CORS = {
@@ -11,56 +12,68 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
 
-const emsg = (e: unknown) => (e && typeof (e as any).message === "string" ? String((e as any).message) : String(e));
+const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
+
+type ProbeInput = { ids?: unknown };
 
 app.http("britpart-probe-categories", {
   route: "britpart-probe-categories",
-  methods: ["POST", "GET", "OPTIONS"],
+  methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
     try {
-      let ids: number[] | null = null;
+      const raw = (await req.json().catch(() => ({}))) as ProbeInput;
+      const ids = Array.isArray(raw?.ids)
+        ? (raw.ids as any[]).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n))
+        : [];
 
-      if (req.method === "GET") {
-        const q = (req.query.get("ids") || "").trim();
-        if (q) {
-          ids = q
-            .split(/[,\s]+/)
-            .map((s: string) => Number(s))
-            .filter((n: number) => Number.isFinite(n));
-        }
-      } else {
-        const raw: unknown = await req.json().catch(() => null);
-        const body = (raw && typeof raw === "object" ? (raw as { ids?: unknown }) : {});
-        if (Array.isArray(body.ids)) {
-          ids = (body.ids as unknown[])
-            .map((v: unknown) => Number(v as any))
-            .filter((n: number) => Number.isFinite(n));
-        }
+      if (!ids.length) {
+        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
       }
 
-      if (!ids || ids.length === 0) {
-        return {
-          status: 400,
-          headers: CORS,
-          jsonBody: { ok: false, error: "Missing 'ids' (array of numbers)" },
-        };
-      }
-
-      ctx.log?.(`probe-categories: ids=${ids.join(", ")}`);
-
-      // 1) Alla unika SKU under valda rötter
+      // 1) Samla “blad” (leaf-kategorier) och alla SKU
+      const leaves = await britpartCollectLeaves(ids);
       const allCodes = await britpartGetPartCodesForCategories(ids);
-      const uniqueSkuCount = new Set(allCodes).size;
-      const sampleAll = allCodes.slice(0, 10);
+      const unique = Array.from(new Set(allCodes));
 
-      // 2) Leaf-noder med counts + samples
-      const leavesRaw = await britpartCollectLeaves(ids);
-      const leaves = leavesRaw
-        .map((l) => ({ leafId: l.id, count: l.count, sampleSkus: l.sample }))
-        .sort((a, b) => b.count - a.count);
+      // 2) Debug-info per input-id (så vi ser vad API:t faktiskt returnerar)
+      const debugNodes: Array<{
+        inputId: number;
+        returnedId: number | null;
+        title: string | null;
+        partCodesCount: number;
+        childIds: number[];
+        error?: string;
+      }> = [];
+
+      for (const id of ids) {
+        try {
+          const cat = await getCategory(id);
+          const childIds = [
+            ...(Array.isArray(cat.subcategories) ? cat.subcategories.map((s: any) => Number(s?.id)) : []),
+            ...(Array.isArray(cat.subcategoryIds) ? cat.subcategoryIds.map((n: any) => Number(n)) : []),
+          ].filter((n: number) => Number.isFinite(n));
+
+          debugNodes.push({
+            inputId: id,
+            returnedId: Number((cat as any).id) || null,
+            title: (cat as any).title ?? null,
+            partCodesCount: Array.isArray(cat.partCodes) ? cat.partCodes.length : 0,
+            childIds,
+          });
+        } catch (e: any) {
+          debugNodes.push({
+            inputId: id,
+            returnedId: null,
+            title: null,
+            partCodesCount: 0,
+            childIds: [],
+            error: emsg(e),
+          });
+        }
+      }
 
       return {
         status: 200,
@@ -68,15 +81,14 @@ app.http("britpart-probe-categories", {
         jsonBody: {
           ok: true,
           inputIds: ids,
-          uniqueSkuCount,
-          leaves,
-          sampleAll,
+          uniqueSkuCount: unique.length,
+          sampleAll: unique.slice(0, 10),
+          leaves: leaves.map((l) => ({ leafId: l.id, count: l.count, sampleSkus: l.sample })),
+          debug: { nodes: debugNodes },
         },
       };
-    } catch (e: unknown) {
-      const msg = emsg(e);
-      ctx.error?.(msg);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, error: msg } };
+    } catch (e: any) {
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: emsg(e) } };
     }
   },
 });
