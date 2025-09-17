@@ -276,11 +276,29 @@ export default function App() {
   const [perPage, setPerPage] = useState<number>(25);
   const [roundingMode, setRoundingMode] = useState<RoundModeUI>("none");
   const [roundTo, setRoundTo] = useState<number>(1);
-  const [isImporting, setIsImporting] = useState(false);
+
+  // busy/progress för importen
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState<null | {
+    total: number;
+    remaining: number;
+    processed: number;
+    created: number;
+    updated: number;
+    exists: number;
+    chunks: number;
+    note?: string;
+  }>(null);
 
   // PROBE state
   const [probeLoading, setProbeLoading] = useState(false);
   const [probe, setProbe] = useState<ProbeResponse | null>(null);
+
+  const pct = useMemo(() => {
+    if (!prog || !prog.total) return 0;
+    const done = Math.max(0, prog.total - prog.remaining);
+    return Math.min(100, Math.round((done / prog.total) * 100));
+  }, [prog]);
 
   const handleProbe = async () => {
     if (!selected.length) {
@@ -312,46 +330,86 @@ export default function App() {
     }
   };
 
-  const handleImport = async () => {
+  // NY: kör import i loop tills klart, med tysta omförsök.
+  const handleImportAll = async () => {
     const ids = selected;
-    if (!ids.length) return;
+    if (!ids.length || busy) return;
+
+    setBusy(true);
+    setProg({
+      total: 0,
+      remaining: 0,
+      processed: 0,
+      created: 0,
+      updated: 0,
+      exists: 0,
+      chunks: 0,
+      note: "Startar…",
+    });
+
+    let safety = 60;     // max antal chunkar per körning
+    let retries = 0;     // omförsök på temporära fel
+    let agg = { created: 0, updated: 0, exists: 0, processed: 0 };
 
     try {
-      setIsImporting(true);
+      while (safety-- > 0) {
+        try {
+          const r: any = await runImport({
+            ids,
+            pageSize: Number(perPage) || 25,
+            roundingMode,
+            roundTo: Number(roundTo) || 1,
+          });
 
-      const r: any = await runImport({
-        ids,
-        pageSize: Number(perPage) || 200,
-        roundingMode,
-        roundTo: Number(roundTo) || 1,
-      });
+          // nollställ retries efter lyckad chunk
+          retries = 0;
 
-      console.log("Import result", r);
+          // uppdatera aggregat & progress
+          agg.created += Number(r?.created ?? 0);
+          agg.updated += Number(r?.updatedWithMeta ?? 0);
+          agg.exists  += Number(r?.exists ?? 0);
+          agg.processed += Number(r?.processedSkus ?? 0);
 
-      const noBasicsExamples =
-        Array.isArray(r?.noBasicsSample) && r.noBasicsSample.length
-          ? `  ex: ${r.noBasicsSample.join(", ")}`
-          : "";
+          setProg(prev => ({
+            total: Number(r?.totalSkus ?? prev?.total ?? 0),
+            remaining: Number(r?.remainingSkus ?? prev?.remaining ?? 0),
+            processed: agg.processed,
+            created: agg.created,
+            updated: agg.updated,
+            exists: agg.exists,
+            chunks: (prev?.chunks ?? 0) + 1,
+            note: r?.hasMore ? "Fortsätter…" : "Klart",
+          }));
 
+          if (!r?.hasMore) break;
+
+          // liten paus mellan chunkar
+          await new Promise(res => setTimeout(res, 500));
+        } catch (err: any) {
+          // tyst omförsök upp till 3 gånger på rad
+          retries++;
+          setProg(prev => ({ ...(prev as any), note: `Tillfälligt fel – försök ${retries}/3…` }));
+          console.warn("Chunk error:", err);
+          if (retries >= 3) {
+            setProg(prev => ({ ...(prev as any), note: "Avbröt efter upprepade fel." }));
+            break;
+          }
+          await new Promise(res => setTimeout(res, 1000));
+        }
+      }
+
+      // avslutande summering (ingen "fail"-alert mitt i)
+      const p = (n: number) => n || 0;
       alert(
         `Import klar.
-Valda kategorier: ${selected.length}  [${selected.join(", ")}]
-Hittade artiklar (unika SKU): ${r?.totalSkus ?? 0}
-Bearbetade i denna körning: ${r?.processedSkus ?? 0}
-Återstår: ${r?.remainingSkus ?? 0}  (${r?.hasMore ? "kör igen" : "klart"})
-Fanns redan: ${r?.exists ?? 0}
-Nyskapade: ${r?.created ?? 0}
-Uppdaterade (namn/bild/beskrivning): ${r?.updatedWithMeta ?? 0}
-Ogiltiga bild-URL: ${r?.invalidImageUrls ?? 0}
-SKU utan basdata: ${r?.noBasics ?? 0}${noBasicsExamples}
-Create-fel: ${Array.isArray(r?.createFailedSkus) ? r.createFailedSkus.length : 0}
-Update-fel: ${Array.isArray(r?.updateFailedIds) ? r.updateFailedIds.length : 0}`
+Bearbetat i denna session: ${p(agg.processed)}
+Nyskapade: ${p(agg.created)}
+Uppdaterade: ${p(agg.updated)}
+Fanns redan: ${p(agg.exists)}
+Återstår nu: ${p(prog?.remaining ?? 0)}`
       );
-    } catch (e: any) {
-      console.error("Import fail", e);
-      alert(e?.message || String(e));
     } finally {
-      setIsImporting(false);
+      setBusy(false);
     }
   };
 
@@ -362,11 +420,8 @@ Update-fel: ${Array.isArray(r?.updateFailedIds) ? r.updateFailedIds.length : 0}`
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
-              Landroverdelar – Britpart ↔ WooCommerce
+              Landroverdelar 
             </h1>
-          </div>
-          <div className="hidden sm:flex items-center gap-2 text-xs text-gray-500">
-            <Badge>Endast “subkategorier” (ID-filter)</Badge>
           </div>
         </div>
       </header>
@@ -436,14 +491,36 @@ Update-fel: ${Array.isArray(r?.updateFailedIds) ? r.updateFailedIds.length : 0}`
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={handleProbe} disabled={!selected.length || probeLoading}>
+              <Button variant="outline" onClick={handleProbe} disabled={!selected.length || probeLoading || busy}>
                 {probeLoading ? "Läser…" : "Förhandsvisa (probe)"}
               </Button>
-              <Button onClick={handleImport} disabled={!selected.length || isImporting}>
-                {isImporting ? "Importerar…" : `Importera ${selected.length} valda`}
+              <Button onClick={handleImportAll} disabled={!selected.length || busy}>
+                {busy ? `Importerar… ${pct}%` : `Importera ${selected.length} valda`}
               </Button>
               <Badge>ID: {selected.join(", ") || "–"}</Badge>
             </div>
+
+            {/* Progress-panel */}
+            {prog && (
+              <div className="mt-3">
+                <div className="h-2 bg-gray-200 rounded">
+                  <div
+                    className="h-2 bg-indigo-600 rounded transition-[width] duration-300"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div className="text-xs text-gray-600 flex gap-4 flex-wrap mt-2">
+                  <span>Chunks: {prog.chunks}</span>
+                  <span>Totalt SKU: {prog.total}</span>
+                  <span>Bearbetade: {prog.processed}</span>
+                  <span>Skapade: {prog.created}</span>
+                  <span>Uppdaterade: {prog.updated}</span>
+                  <span>Fanns redan: {prog.exists}</span>
+                  <span>Återstår: {prog.remaining}</span>
+                  {prog.note && <span className="text-amber-700">⚠︎ {prog.note}</span>}
+                </div>
+              </div>
+            )}
 
             {/* Probe-resultatpanel */}
             {probe && (
