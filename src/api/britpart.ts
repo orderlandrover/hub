@@ -1,26 +1,27 @@
-// src/api/britpart.ts
-export type ImportPayload = {
+export type RoundModeUI = "none" | "nearest" | "up" | "down";
+
+export async function runImport(opts: {
   ids: number[];
   pageSize?: number;
-  roundingMode?: "none" | "nearest" | "up" | "down";
+  roundingMode?: RoundModeUI;
   roundTo?: number;
-};
-
-export async function runImport(payload: ImportPayload) {
-  const res = await fetch("/api/import-run", {
+  /** endast valda leaf-IDn (från probetabellen) */
+  leafIds?: number[];
+  /** valfritt: begränsa till specifika SKU */
+  restrictSkus?: string[];
+}) {
+  const r = await fetch("/api/import-run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(opts),
   });
-
-  const text = await res.text();
-  let json: any = null;
-  try { json = text ? JSON.parse(text) : null; } catch { /* ignore parse */ }
-
-  if (!res.ok) {
-    const where = json?.where || "unknown";
-    const err = json?.error || text || "Unknown backend error";
-    throw new Error(`HTTP ${res.status} [${where}]: ${err}`);
+  const txt = await r.text();
+  try {
+    const json = txt ? JSON.parse(txt) : {};
+    if (!r.ok) throw new Error(json?.error || `HTTP ${r.status}: Backend call failure`);
+    return json;
+  } catch {
+    if (!r.ok) throw new Error(`HTTP ${r.status}: Backend call failure`);
+    return {};
   }
-  return json ?? {};
 }

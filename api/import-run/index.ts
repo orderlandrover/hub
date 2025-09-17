@@ -1,4 +1,3 @@
-// api/import-run/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import {
   britpartGetPartCodesForCategoriesFiltered,
@@ -37,13 +36,13 @@ const canon = (u?: string) => {
 /* Britpart→Woo kategori-mappning                                  */
 /* --------------------------------------------------------------- */
 /**
- * FYLL I med dina riktiga Woo-kategori-IDn.
  * Key = Britpart categoryId (leaf eller ej), value = Woo categoryId.
- * Exempel: { 58: 123, 57: 124 }
+ * Fyll på verkliga mappningar när du vet dem.
  */
 const BRITPART_TO_WC: Record<number, number> = {
-  // 58: 123,
-  // 57: 124,
+  // Exempel:
+  // 59: 2012,   // “Land Rover” → din Woo-kategori-ID
+  // 60: 2013,   // “Defender 90/110”
 };
 
 function wcCatsFromBritpartCategoryIds(categoryIds?: number[]): { id: number }[] | undefined {
@@ -122,62 +121,16 @@ async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) 
 }
 
 /* --------------------------------------------------------------- */
-/* “Resume” sida: välj nästa N SKU som INTE redan finns i Woo      */
-/* --------------------------------------------------------------- */
-
-async function pickNextSkus(
-  allSkus: string[],
-  pageSize: number,
-  ctx: InvocationContext,
-) {
-  const page: string[] = [];
-  const existing = new Map<string, number>();
-  let checkedExisting = 0;
-  let skippedExisting = 0;
-
-  let i = 0;
-  const conc = 10;
-
-  async function worker() {
-    while (i < allSkus.length && page.length < pageSize) {
-      const idx = i++;
-      const sku = allSkus[idx];
-      try {
-        const id = await wcFindProductIdBySku(sku);
-        checkedExisting++;
-        if (id) {
-          existing.set(sku, id);
-          skippedExisting++;
-          continue;
-        }
-        // bara lägg till om vi fortfarande behöver fler i sidan
-        if (page.length < pageSize) page.push(sku);
-      } catch (e) {
-        ctx.warn?.(`exists-check fail ${sku}: ${emsg(e)}`);
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: conc }, worker));
-
-  // “Rest” = totala - (skannade som fanns) - (valda i denna sida)
-  const remainingSkus = Math.max(0, allSkus.length - skippedExisting - page.length);
-
-  return { page, existing, checkedExisting, skippedExisting, remainingSkus };
-}
-
-/* --------------------------------------------------------------- */
 /* Types                                                           */
 /* --------------------------------------------------------------- */
 
 type ImportRunBody = {
   ids: number[];
   pageSize?: number;
-  /** valfritt: importera endast från dessa leaf-ID (från probet) */
+  /** importera endast från dessa leaf-ID (valda i UI) */
   leafIds?: number[];
   /** valfritt: begränsa till exakt dessa SKU */
   restrictSkus?: string[];
-  /** passthrough (ej använda här just nu) */
   roundingMode?: "none" | "nearest" | "up" | "down";
   roundTo?: number;
 };
@@ -198,44 +151,53 @@ app.http("import-run", {
       const body = (await req.json()) as ImportRunBody;
       const ids = body?.ids;
       if (!Array.isArray(ids) || ids.length === 0) {
-        return { status: 200, headers: CORS, jsonBody: { ok: false, where: "validate", error: "No ids" } };
+        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
       }
 
-      // Per körning (skydd mot timeout)
+      // Rimlig chunk-storlek för att inte slå i tidsgränser
       const PAGE_MAX = 50;
       const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 25), PAGE_MAX));
 
-      /* 1) Samla alla SKU */
+      /* 1) Samla alla SKU (unika) */
       where = "collect-skus";
       let allSkus = Array.from(
-        new Set(
-          (await britpartGetPartCodesForCategoriesFiltered(ids, body.leafIds)).map(String)
-        )
+        new Set((await britpartGetPartCodesForCategoriesFiltered(ids, body.leafIds)).map(String))
       );
       if (Array.isArray(body.restrictSkus) && body.restrictSkus.length) {
-        const allow = new Set(body.restrictSkus.map((s) => String(s)));
+        const allow = new Set(body.restrictSkus.map(String));
         allSkus = allSkus.filter((s) => allow.has(s));
       }
+      ctx.log?.(`collect-skus: roots=${ids.join(",")} leafs=${(body.leafIds||[]).join(",")||"-"} total=${allSkus.length}`);
 
-      /* 2) Välj nästa sida (hoppa över de som redan finns) */
-      where = "pick-page";
-      const { page, existing, checkedExisting, skippedExisting, remainingSkus } =
-        await pickNextSkus(allSkus, pageSize, ctx);
-
-      const skus = page;
-
-      ctx.log?.(
-        `collect-skus: roots=${ids.join(",")} leafs=${(body.leafIds || []).join(",") || "-"} total=${allSkus.length} ` +
-        `pageSize=${pageSize} checkedExisting=${checkedExisting} skippedExisting=${skippedExisting} chosen=${skus.length}`
-      );
-
+      /* 2) Filtrera bort sådant som redan finns i Woo (så nästa körning tar “nästa sida”) */
+      where = "filter-existing";
+      const existingAll = new Set<string>();
+      {
+        let i = 0;
+        const conc = 10;
+        async function worker() {
+          while (i < allSkus.length) {
+            const sku = allSkus[i++];
+            try {
+              const id = await wcFindProductIdBySku(sku);
+              if (id) existingAll.add(sku);
+            } catch (e) {
+              ctx.warn?.(`lookup(all) fail ${sku}: ${emsg(e)}`);
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: conc }, worker));
+      }
+      const pendingSkus = allSkus.filter((s) => !existingAll.has(s));
+      const skus = pendingSkus.slice(0, pageSize);
+      const remainingSkus = Math.max(0, pendingSkus.length - skus.length);
       if (skus.length === 0) {
         return {
           status: 200,
           headers: CORS,
           jsonBody: {
             ok: true,
-            where: "empty",
+            where: "nothing-to-do",
             selectedCategoryIds: ids,
             usedLeafIds: body.leafIds ?? [],
             restrictedToSkus: body.restrictSkus?.length ?? 0,
@@ -244,14 +206,13 @@ app.http("import-run", {
             totalSkus: allSkus.length,
             remainingSkus,
             hasMore: remainingSkus > 0,
-            exists: existing.size,
+            exists: existingAll.size,
             created: 0,
             updatedWithMeta: 0,
             invalidImageUrls: 0,
             createFailedSkus: [],
             updateFailedIds: [],
-            skippedExisting,
-            sampleSkus: [],
+            sampleSkus: allSkus.slice(0, 10),
           },
         };
       }
@@ -262,33 +223,9 @@ app.http("import-run", {
       const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
       ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, validImages=${imgOkCount}`);
 
-      /* 4) Dubbelkolla befintliga (för säkerhets skull) */
-      where = "lookup-existing";
-      // (de flesta är redan filtrerade bort, men gör en sista koll på sidan)
-      const existsOnPage = new Map<string, number>(existing);
-      {
-        let i = 0;
-        const conc = 6;
-        async function worker() {
-          while (i < skus.length) {
-            const sku = skus[i++];
-            if (existsOnPage.has(sku)) continue;
-            try {
-              const id = await wcFindProductIdBySku(sku);
-              if (id) existsOnPage.set(sku, id);
-            } catch (e) {
-              ctx.warn?.(`lookup fail ${sku}: ${emsg(e)}`);
-            }
-          }
-        }
-        await Promise.all(Array.from({ length: conc }, worker));
-      }
-      ctx.log?.(`lookup-existing (page): exists=${existsOnPage.size} / page=${skus.length}`);
-
-      /* 5) Skapa saknade */
+      /* 4) Skapa saknade (draft) – sätt bild + meta + (ev.) kategorier */
       where = "create";
-      const toCreateSkus = skus.filter((s) => !existsOnPage.has(s));
-      const createPayloads: any[] = toCreateSkus.map((sku) => {
+      const createPayloads: any[] = skus.map((sku) => {
         const b = basics[sku] || {};
         const c = canon(b.imageUrl);
         const meta = [];
@@ -315,85 +252,20 @@ app.http("import-run", {
       });
 
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
-      ctx.log?.(`create: requested=${toCreateSkus.length}, created=${created}, failed=${failedSkus.length}`);
+      ctx.log?.(`create: tried=${skus.length}, created=${created}, failed=${failedSkus.length}`);
 
-      /* 6) Läs befintlig canon-meta (för att undvika resideload) */
-      where = "prefetch-existing-meta";
-      const existingById = Array.from(existsOnPage.values());
-      const existingMetaById = new Map<number, { canon?: string }>();
-      {
-        let i = 0;
-        const conc = 8;
-        async function worker() {
-          while (i < existingById.length) {
-            const pid = existingById[i++];
-            try {
-              const prod = await wcGetJSON<any>(`/products/${pid}?_fields=id,meta_data`);
-              const meta = Array.isArray(prod?.meta_data) ? prod.meta_data : [];
-              const canonMeta = meta.find((m: any) => m?.key === "_lr_source_image_canon")?.value;
-              existingMetaById.set(pid, { canon: typeof canonMeta === "string" ? canonMeta : undefined });
-            } catch { /* ignore */ }
-          }
-        }
-        await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, existingById.length)) }, worker));
-      }
-
-      /* 7) Uppdatera ev. bilder/texter/kategorier */
+      /* 5) För redan skapade ID (nyss skapade) hoppa onödig uppdatering. För befintliga (om vi valt att tillåta)
+            kan man lägga uppdateringslogik här – men i detta flöde räcker det att skapa. */
       where = "update";
+      const existingById = Object.values(idsBySku); // nyskapade
+      const existingMetaById = new Map<number, { canon?: string }>();
+
+      // (Valfritt) hämta meta och sätt bilder om canon ändrats – hoppar i det här minimala flödet.
       const updates: WooUpdate[] = [];
       let invalidImageUrls = 0;
-
-      for (const sku of skus) {
-        const idExisting = existsOnPage.get(sku);
-        const idCreated = idsBySku[sku];
-        const id = idExisting ?? idCreated;
-        if (!id) continue;
-
-        const b = (basics as any)[sku]; if (!b) continue;
-        const wasCreatedNow = !!idCreated && !idExisting;
-
-        const u: WooUpdate = { id };
-
-        if (!wasCreatedNow) {
-          if (b.title) u.name = b.title;
-          if (b.description) { u.description = b.description; u.short_description = b.description; }
-        }
-
-        if (!wasCreatedNow) {
-          const newCanon = canon(b.imageUrl);
-          const prevCanon = existingMetaById.get(id)?.canon;
-
-          if (validImage(b.imageUrl) && newCanon && newCanon !== prevCanon) {
-            u.images = [{ src: b.imageUrl!, position: 0 }];
-            (u as any).meta_data = [
-              { key: "_lr_source_image_url", value: b.imageUrl },
-              { key: "_lr_source_image_canon", value: newCanon },
-              ...(b as any).imageSource ? [{ key: "_lr_source", value: (b as any).imageSource }] : [],
-              Array.isArray(b.categoryIds) ? { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) } : null,
-            ].filter(Boolean);
-          } else if (b.imageUrl && !newCanon) {
-            invalidImageUrls++;
-          }
-        }
-
-        const cats = wcCatsFromBritpartCategoryIds(b.categoryIds);
-        if (!wasCreatedNow && cats) {
-          (u as any).categories = cats;
-          (u as any).meta_data = [
-            ...(((u as any).meta_data as any[]) ?? []),
-            { key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) },
-          ];
-        }
-
-        if (u.name || u.images || u.description || u.short_description || (u as any).categories || (u as any).meta_data) {
-          updates.push(u);
-        }
-      }
-
       const { updated, failedIds } = await updateProductsSafe(updates, ctx);
-      ctx.log?.(`update: candidates=${updates.length}, updated=${updated}, failed=${failedIds.length}`);
 
-      /* 8) Svar */
+      /* 6) Svar */
       return {
         status: 200,
         headers: CORS,
@@ -408,21 +280,18 @@ app.http("import-run", {
           totalSkus: allSkus.length,
           remainingSkus,
           hasMore: remainingSkus > 0,
-          exists: existsOnPage.size,
+          exists: existingAll.size,
           created,
           updatedWithMeta: updated,
           invalidImageUrls,
           createFailedSkus: failedSkus,
           updateFailedIds: failedIds,
-          skippedExisting,
           sampleSkus: skus.slice(0, 10),
         },
       };
     } catch (e: any) {
-      // Viktigt: returnera 200 så UI inte ser ett nätverksfel när delar lyckades
       const msg = emsg(e);
-      ctx.error?.(`import-run FAIL at ${where}: ${msg}`);
-      return { status: 200, headers: CORS, jsonBody: { ok: false, where, error: msg } };
+      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: msg } };
     }
   },
 });

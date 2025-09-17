@@ -248,8 +248,7 @@ function WooCategoriesPanel() {
           </Badge>
           <Button
             variant="outline"
-            onClick={() => setPage((p) => Math.min(data.pages, p + 1))}
-            disabled={page >= (data.pages || 1)}
+            onClick={() => setPage((p) => Math.min(data.pages, p + 1))} disabled={page >= (data.pages || 1)}
           >
             Nästa
           </Button>
@@ -262,9 +261,9 @@ function WooCategoriesPanel() {
 /* --------------------------------- APP --------------------------------- */
 const TABS = [
   { key: "import", label: "Importera Britpart" },
-  { key: "excel", label: "Avancerad import" }, // SAS/Blob
+  { key: "excel", label: "Avancerad import" },
   { key: "categories", label: "Woo-kategorier" },
-  { key: "logs", label: "Produkter" }, // visar vår ProductsTab
+  { key: "logs", label: "Produkter" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -277,28 +276,23 @@ export default function App() {
   const [roundingMode, setRoundingMode] = useState<RoundModeUI>("none");
   const [roundTo, setRoundTo] = useState<number>(1);
 
-  // busy/progress för importen
-  const [busy, setBusy] = useState(false);
-  const [prog, setProg] = useState<null | {
-    total: number;
-    remaining: number;
-    processed: number;
-    created: number;
-    updated: number;
-    exists: number;
-    chunks: number;
-    note?: string;
-  }>(null);
+  // import-runner state
+  const [isImporting, setIsImporting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const appendLog = (s: string) => setLogLines((xs) => [...xs.slice(-200), s]);
 
   // PROBE state
   const [probeLoading, setProbeLoading] = useState(false);
   const [probe, setProbe] = useState<ProbeResponse | null>(null);
+  const [selectedLeafs, setSelectedLeafs] = useState<number[]>([]);
 
-  const pct = useMemo(() => {
-    if (!prog || !prog.total) return 0;
-    const done = Math.max(0, prog.total - prog.remaining);
-    return Math.min(100, Math.round((done / prog.total) * 100));
-  }, [prog]);
+  const toggleLeaf = (id: number) =>
+    setSelectedLeafs((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]));
+
+  const allLeafCount = probe?.leaves?.length ?? 0;
+  const selectAllLeafs = () => setSelectedLeafs(probe?.leaves?.map((l) => l.leafId) ?? []);
+  const clearLeafs = () => setSelectedLeafs([]);
 
   const handleProbe = async () => {
     if (!selected.length) {
@@ -320,8 +314,8 @@ export default function App() {
         leaves,
         sampleAll: Array.isArray(res?.sampleAll) ? res.sampleAll : [],
       });
-
-      console.log("Probe:", res);
+      setSelectedLeafs(leaves.map((x) => x.leafId)); // förvalt: alla
+      setLogLines([]);
     } catch (e: any) {
       console.error("Probe fail", e);
       alert(e?.message || String(e));
@@ -330,86 +324,66 @@ export default function App() {
     }
   };
 
-  // NY: kör import i loop tills klart, med tysta omförsök.
-  const handleImportAll = async () => {
+  // loopar tills backend säger att inget återstår
+  const runAllChunks = async () => {
     const ids = selected;
-    if (!ids.length || busy) return;
+    if (!ids.length) return;
 
-    setBusy(true);
-    setProg({
-      total: 0,
-      remaining: 0,
-      processed: 0,
-      created: 0,
-      updated: 0,
-      exists: 0,
-      chunks: 0,
-      note: "Startar…",
-    });
-
-    let safety = 60;     // max antal chunkar per körning
-    let retries = 0;     // omförsök på temporära fel
-    let agg = { created: 0, updated: 0, exists: 0, processed: 0 };
+    setIsImporting(true);
+    setLogLines([]);
+    setProgress({ done: 0, total: 0 });
 
     try {
-      while (safety-- > 0) {
-        try {
-          const r: any = await runImport({
-            ids,
-            pageSize: Number(perPage) || 25,
-            roundingMode,
-            roundTo: Number(roundTo) || 1,
-          });
+      let hasMore = true;
+      let totalSkus = 0;
+      let remaining = 0;
+      let chunk = 0;
 
-          // nollställ retries efter lyckad chunk
-          retries = 0;
+      while (hasMore) {
+        chunk++;
+        appendLog(`Kör chunk ${chunk}…`);
 
-          // uppdatera aggregat & progress
-          agg.created += Number(r?.created ?? 0);
-          agg.updated += Number(r?.updatedWithMeta ?? 0);
-          agg.exists  += Number(r?.exists ?? 0);
-          agg.processed += Number(r?.processedSkus ?? 0);
+        const r: any = await runImport({
+          ids,
+          leafIds: selectedLeafs.length ? selectedLeafs : undefined,
+          pageSize: Number(perPage) || 25,
+          roundingMode,
+          roundTo: Number(roundTo) || 1,
+        });
 
-          setProg(prev => ({
-            total: Number(r?.totalSkus ?? prev?.total ?? 0),
-            remaining: Number(r?.remainingSkus ?? prev?.remaining ?? 0),
-            processed: agg.processed,
-            created: agg.created,
-            updated: agg.updated,
-            exists: agg.exists,
-            chunks: (prev?.chunks ?? 0) + 1,
-            note: r?.hasMore ? "Fortsätter…" : "Klart",
-          }));
+        const processed = Number(r?.processedSkus || 0);
+        totalSkus = Number(r?.totalSkus || totalSkus);
+        remaining = Number(r?.remainingSkus || 0);
+        hasMore = !!r?.hasMore;
 
-          if (!r?.hasMore) break;
+        const created = Number(r?.created || 0);
+        const updated = Number(r?.updatedWithMeta || 0);
+        const exists = Number(r?.exists || 0);
 
-          // liten paus mellan chunkar
-          await new Promise(res => setTimeout(res, 500));
-        } catch (err: any) {
-          // tyst omförsök upp till 3 gånger på rad
-          retries++;
-          setProg(prev => ({ ...(prev as any), note: `Tillfälligt fel – försök ${retries}/3…` }));
-          console.warn("Chunk error:", err);
-          if (retries >= 3) {
-            setProg(prev => ({ ...(prev as any), note: "Avbröt efter upprepade fel." }));
-            break;
-          }
-          await new Promise(res => setTimeout(res, 1000));
-        }
+        appendLog(
+          `✔ chunk ${chunk}: processed=${processed}, created=${created}, updated=${updated}, exists=${exists}, remaining=${remaining}`
+        );
+
+        const done = Math.max(0, totalSkus - remaining);
+        setProgress({ done, total: totalSkus });
+
+        // om backend redan filtrerat bort allt → breaka
+        if (!processed && !hasMore) break;
       }
 
-      // avslutande summering (ingen "fail"-alert mitt i)
-      const p = (n: number) => n || 0;
       alert(
         `Import klar.
-Bearbetat i denna session: ${p(agg.processed)}
-Nyskapade: ${p(agg.created)}
-Uppdaterade: ${p(agg.updated)}
-Fanns redan: ${p(agg.exists)}
-Återstår nu: ${p(prog?.remaining ?? 0)}`
+Bearbetat i denna session: ~${Math.max(0, progress.done)} (totalt: ${progress.total || "okänt"})
+Nyskapade: se loggen
+Uppdaterade: se loggen
+Återstår nu: ${remaining}`
       );
+    } catch (e: any) {
+      console.error("Import fail", e);
+      appendLog(`✖ Fel: ${e?.message || String(e)}`);
+      alert(e?.message || String(e));
     } finally {
-      setBusy(false);
+      setIsImporting(false);
     }
   };
 
@@ -419,9 +393,7 @@ Fanns redan: ${p(agg.exists)}
         <div className="w-full px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🛠️</span>
-            <h1 className="text-lg sm:text-xl font-semibold tracking-tight">
-              Landroverdelar 
-            </h1>
+            <h1 className="text-lg sm:text-xl font-semibold tracking-tight">Landroverdelar</h1>
           </div>
         </div>
       </header>
@@ -448,7 +420,7 @@ Fanns redan: ${p(agg.exists)}
         {tab === "import" && (
           <Section
             title="Välj Britpart-subkategorier"
-            subtitle="Filtrering sker på subkategori-ID i backend. Använd 'Förhandsvisa' för att se exakt vilka leafs & antal innan du importerar."
+            subtitle="Använd 'Förhandsvisa' för att få leaf-ID och antal, välj sedan precis vilka leafs som ska importeras."
           >
             <SubcategorySelector selected={selected} onChange={setSelected} />
             <div className="h-4" />
@@ -460,9 +432,9 @@ Fanns redan: ${p(agg.exists)}
                   type="number"
                   min={10}
                   value={perPage}
-                  onChange={(e) => setPerPage(Math.max(10, Number(e.target.value) || 200))}
+                  onChange={(e) => setPerPage(Math.max(10, Number(e.target.value) || 25))}
                 />
-                <p className="text-xs text-gray-500 mt-1">Backend paginerar tills allt är hämtat.</p>
+                <p className="text-xs text-gray-500 mt-1">Backend paginerar tills allt är klart.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Avrundningsläge</label>
@@ -491,75 +463,93 @@ Fanns redan: ${p(agg.exists)}
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={handleProbe} disabled={!selected.length || probeLoading || busy}>
+              <Button variant="outline" onClick={handleProbe} disabled={!selected.length || probeLoading || isImporting}>
                 {probeLoading ? "Läser…" : "Förhandsvisa (probe)"}
               </Button>
-              <Button onClick={handleImportAll} disabled={!selected.length || busy}>
-                {busy ? `Importerar… ${pct}%` : `Importera ${selected.length} valda`}
+              <Button onClick={runAllChunks} disabled={!selected.length || isImporting || !probe}>
+                {isImporting ? "Importerar…" : `Importera ${selected.length} valda`}
               </Button>
               <Badge>ID: {selected.join(", ") || "–"}</Badge>
+              {isImporting && (
+                <div className="flex items-center gap-2 ml-2">
+                  <div className="w-48 h-2 bg-gray-200 rounded">
+                    <div
+                      className="h-2 bg-indigo-600 rounded transition-all"
+                      style={{
+                        width:
+                          progress.total > 0
+                            ? `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%`
+                            : "10%",
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-600">
+                    {progress.total > 0 ? `${progress.done}/${progress.total}` : "pågår…"}
+                  </span>
+                </div>
+              )}
             </div>
 
-            {/* Progress-panel */}
-            {prog && (
-              <div className="mt-3">
-                <div className="h-2 bg-gray-200 rounded">
-                  <div
-                    className="h-2 bg-indigo-600 rounded transition-[width] duration-300"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <div className="text-xs text-gray-600 flex gap-4 flex-wrap mt-2">
-                  <span>Chunks: {prog.chunks}</span>
-                  <span>Totalt SKU: {prog.total}</span>
-                  <span>Bearbetade: {prog.processed}</span>
-                  <span>Skapade: {prog.created}</span>
-                  <span>Uppdaterade: {prog.updated}</span>
-                  <span>Fanns redan: {prog.exists}</span>
-                  <span>Återstår: {prog.remaining}</span>
-                  {prog.note && <span className="text-amber-700">⚠︎ {prog.note}</span>}
-                </div>
-              </div>
-            )}
-
-            {/* Probe-resultatpanel */}
+            {/* Probe-resultat + leaf-val */}
             {probe && (
               <div className="mt-4 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center gap-3 mb-2">
-                  <Badge>Unika SKU totalt: {probe.uniqueSkuCount}</Badge>
+                  <Badge>Unika SKU totalt (alla leafs): {probe.uniqueSkuCount}</Badge>
+                  <Badge>Valda rötter: {probe.inputIds.join(", ")}</Badge>
                   <Badge>
-                    Valda rötter: {Array.isArray(probe.inputIds) && probe.inputIds.length ? probe.inputIds.join(", ") : "–"}
+                    Valda leafs: {selectedLeafs.length}/{allLeafCount}
                   </Badge>
-                  {Array.isArray(probe.sampleAll) && probe.sampleAll.length ? (
-                    <Badge>Exempel: {probe.sampleAll.slice(0, 8).join(", ")}{probe.sampleAll.length > 8 ? " …" : ""}</Badge>
-                  ) : null}
+                  <Button variant="ghost" onClick={selectAllLeafs} disabled={isImporting}>Välj alla</Button>
+                  <Button variant="ghost" onClick={clearLeafs} disabled={isImporting}>Rensa</Button>
                 </div>
 
                 <div className="overflow-auto border border-gray-200 rounded-lg">
                   <table className="min-w-full text-sm">
                     <thead className="bg-gray-50">
                       <tr>
+                        <th className="text-left px-3 py-2">Välj</th>
                         <th className="text-left px-3 py-2">Leaf ID</th>
                         <th className="text-left px-3 py-2">Antal SKU</th>
                         <th className="text-left px-3 py-2">Exempel (max 5)</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(probe.leaves || []).map((row) => (
-                        <tr key={row.leafId} className="odd:bg-white even:bg-gray-50">
-                          <td className="px-3 py-2 font-mono">#{row.leafId}</td>
-                          <td className="px-3 py-2">{row.count}</td>
-                          <td className="px-3 py-2">
-                            {Array.isArray(row.sampleSkus) && row.sampleSkus.length ? row.sampleSkus.join(", ") : "–"}
-                          </td>
-                        </tr>
-                      ))}
+                      {(probe.leaves || []).map((row) => {
+                        const checked = selectedLeafs.includes(row.leafId);
+                        return (
+                          <tr key={row.leafId} className="odd:bg-white even:bg-gray-50">
+                            <td className="px-3 py-2">
+                              <input
+                                type="checkbox"
+                                className="accent-indigo-600"
+                                checked={checked}
+                                onChange={() => toggleLeaf(row.leafId)}
+                                disabled={isImporting}
+                              />
+                            </td>
+                            <td className="px-3 py-2 font-mono">#{row.leafId}</td>
+                            <td className="px-3 py-2">{row.count}</td>
+                            <td className="px-3 py-2">
+                              {Array.isArray(row.sampleSkus) && row.sampleSkus.length ? row.sampleSkus.join(", ") : "–"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+
+                {/* live-logg */}
+                {logLines.length > 0 && (
+                  <div className="mt-3 p-3 bg-gray-50 rounded-lg border text-xs font-mono max-h-48 overflow-auto">
+                    {logLines.map((l, i) => (
+                      <div key={i}>{l}</div>
+                    ))}
+                  </div>
+                )}
+
                 <p className="text-xs text-gray-500 mt-2">
-                  Tip: Om två olika rotnoder visar samma totalsiffra beror det ofta på att deras leafs innehåller
-                  överlappande artiklar. Probe-tabellen ovan avslöjar exakt var antalen kommer ifrån.
+                  Tip: Markera enstaka leafs om du vill dela upp stora kategorier i mindre körningar.
                 </p>
               </div>
             )}
