@@ -194,3 +194,46 @@ export async function wcBatchCreateProducts(items: WooCreate[]): Promise<{ count
   }
   return { count, ids };
 }
+
+/* --------------------------------------------------------------- */
+/* Woo categories helpers                                          */
+/* --------------------------------------------------------------- */
+
+export type WCCategoryPayload = {
+  name: string;
+  parent?: number;
+  slug?: string;
+  description?: string;
+  meta_data?: Array<{ key: string; value: any }>;
+};
+
+export async function wcGetAllCategories(): Promise<any[]> {
+  const out: any[] = [];
+  for (let page = 1; page < 999; page++) {
+    const arr = await wcGetJSON<any[]>(`/products/categories?per_page=100&page=${page}`);
+    if (!Array.isArray(arr) || !arr.length) break;
+    out.push(...arr);
+    if (arr.length < 100) break;
+  }
+  return out;
+}
+
+export async function wcCreateCategory(payload: WCCategoryPayload): Promise<any> {
+  return wcPostJSON(`/products/categories`, payload);
+}
+
+export async function wcUpdateCategory(id: number, payload: Partial<WCCategoryPayload>): Promise<any> {
+  return wcPutJSON(`/products/categories/${id}`, payload);
+}
+
+/** Exakt namnjämförelse (case-insensitive) + parent */
+export async function wcEnsureCategory(name: string, parent?: number, meta?: Record<string, any>): Promise<number> {
+  const all = await wcGetAllCategories();
+  const n = name.trim().toLowerCase();
+  const match = all.find((c) => String(c.name || "").trim().toLowerCase() === n && Number(c.parent || 0) === Number(parent || 0));
+  if (match?.id) return Number(match.id);
+  const meta_data = meta ? Object.entries(meta).map(([key, value]) => ({ key, value })) : undefined;
+  const created = await wcCreateCategory({ name, parent, meta_data });
+  return Number(created.id);
+}
+

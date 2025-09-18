@@ -36,25 +36,75 @@ const canon = (u?: string) => {
 /* Britpart→Woo kategori-mappning                                  */
 /* --------------------------------------------------------------- */
 /**
- * Key = Britpart categoryId (leaf eller ej), value = Woo categoryId.
- * Fyll på verkliga mappningar när du vet dem.
+ * 1) Direkt ID-mappning (Britpart-ID -> Woo-ID)
+ * 2) Namnmappning (Britpart-ID -> Woo-kategorins namn) som slås upp mot Woo
+ * 3) Fallback: om en Woo-kategori heter exakt t.ex. "46" så mappas Britpart 46 dit
  */
+
 const BRITPART_TO_WC: Record<number, number> = {
   // Exempel:
-  // 59: 2012,   // “Land Rover” → din Woo-kategori-ID
-  // 60: 2013,   // “Defender 90/110”
+  // 91: 123, // Britpart 91 -> Woo ID 123
 };
 
-function wcCatsFromBritpartCategoryIds(categoryIds?: number[]): { id: number }[] | undefined {
+const BRITPART_TO_WC_NAMES: Record<number, string> = {
+  // Exempel:
+  // 91: "Defender",
+  // 92: "Defender 1983-2006",
+  // 93: "Defender 2007-2016",
+  // 94: "Defender 2020-",
+  // 80: "Discovery 4",
+  // 81: "Discovery 5",
+  // 82: "Freelander",
+  // 68: "Land Rover",
+  // osv...
+};
+
+let wooNameMapCache: Map<string, number> | null = null;
+
+async function loadWooCategoryNameMap(): Promise<Map<string, number>> {
+  if (wooNameMapCache) return wooNameMapCache;
+  const out = new Map<string, number>();
+  let page = 1;
+  while (true) {
+    const arr = await wcGetJSON<any[]>(`/products/categories?per_page=100&page=${page}`);
+    const list = Array.isArray(arr) ? arr : [];
+    if (!list.length) break;
+    for (const c of list) {
+      if (typeof c?.id === "number" && typeof c?.name === "string") {
+        out.set(c.name.trim().toLowerCase(), c.id);
+      }
+    }
+    if (list.length < 100) break;
+    page++;
+  }
+  wooNameMapCache = out;
+  return out;
+}
+
+async function wcCatsFromBritpartCategoryIds(categoryIds?: number[]): Promise<{ id: number }[] | undefined> {
   if (!Array.isArray(categoryIds) || categoryIds.length === 0) return undefined;
-  const mapped = Array.from(
-    new Set(
-      categoryIds
-        .map((cid) => BRITPART_TO_WC[cid])
-        .filter((n): n is number => typeof n === "number" && n > 0)
-    )
-  );
-  return mapped.length ? mapped.map((id) => ({ id })) : undefined;
+
+  const byName = await loadWooCategoryNameMap();
+  const set = new Set<number>();
+
+  for (const cid of categoryIds) {
+    // 1) direkt ID
+    const direct = BRITPART_TO_WC[cid];
+    if (typeof direct === "number" && direct > 0) { set.add(direct); continue; }
+
+    // 2) via namn
+    const wantName = BRITPART_TO_WC_NAMES[cid];
+    if (wantName) {
+      const id = byName.get(wantName.trim().toLowerCase());
+      if (id) { set.add(id); continue; }
+    }
+
+    // 3) fallback – om Woo-kategori råkar heta "46" etc.
+    const byNumberName = byName.get(String(cid).toLowerCase());
+    if (byNumberName) { set.add(byNumberName); continue; }
+  }
+
+  return set.size ? Array.from(set).map((id) => ({ id })) : undefined;
 }
 
 /* --------------------------------------------------------------- */
@@ -169,7 +219,7 @@ app.http("import-run", {
       }
       ctx.log?.(`collect-skus: roots=${ids.join(",")} leafs=${(body.leafIds||[]).join(",")||"-"} total=${allSkus.length}`);
 
-      /* 2) Filtrera bort sådant som redan finns i Woo (så nästa körning tar “nästa sida”) */
+      /* 2) Filtrera bort sådant som redan finns i Woo → nästa körning tar "nästa sida" */
       where = "filter-existing";
       const existingAll = new Set<string>();
       {
@@ -177,7 +227,7 @@ app.http("import-run", {
         const conc = 10;
         async function worker() {
           while (i < allSkus.length) {
-            const sku = allSkus[i++];
+            const sku = allSkus[i++]!;
             try {
               const id = await wcFindProductIdBySku(sku);
               if (id) existingAll.add(sku);
@@ -188,9 +238,11 @@ app.http("import-run", {
         }
         await Promise.all(Array.from({ length: conc }, worker));
       }
+
       const pendingSkus = allSkus.filter((s) => !existingAll.has(s));
       const skus = pendingSkus.slice(0, pageSize);
       const remainingSkus = Math.max(0, pendingSkus.length - skus.length);
+
       if (skus.length === 0) {
         return {
           status: 200,
@@ -234,8 +286,6 @@ app.http("import-run", {
         if ((b as any).imageSource) meta.push({ key: "_lr_source", value: (b as any).imageSource });
         if (Array.isArray(b.categoryIds)) meta.push({ key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) });
 
-        const cats = wcCatsFromBritpartCategoryIds((b as any).categoryIds);
-
         const payload: any = {
           name: (b.title && b.title.trim()) || sku,
           sku,
@@ -245,22 +295,37 @@ app.http("import-run", {
           short_description: b.description,
           meta_data: meta.length ? meta : undefined,
         };
+
         if (validImage(b.imageUrl)) payload.images = [{ src: b.imageUrl, position: 0 }];
-        if (cats) payload.categories = cats;
+
+        // Kategorier: mappa via ID/namn (se ovan)
+        (payload as any).categories = undefined; // default
+        if (Array.isArray(b.categoryIds) && b.categoryIds.length) {
+          // vikt: många delar har flera Britpart-kategorier
+          // vi mappar dem alla och låter Woo hantera hierarkin
+          // (wcCatsFromBritpartCategoryIds hanterar cache och fallback)
+          // Obs: funktionen är async → vi sätter categories nedan i batch
+        }
 
         return payload;
       });
 
+      // Hämta och sätt kategorier (async för alla basics)
+      const allCats = await Promise.all(
+        skus.map(async (sku) => {
+          const b = basics[sku] || {};
+          return Array.isArray(b.categoryIds) ? await wcCatsFromBritpartCategoryIds(b.categoryIds) : undefined;
+        })
+      );
+      for (let i = 0; i < createPayloads.length; i++) {
+        if (allCats[i]?.length) (createPayloads[i] as any).categories = allCats[i];
+      }
+
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
       ctx.log?.(`create: tried=${skus.length}, created=${created}, failed=${failedSkus.length}`);
 
-      /* 5) För redan skapade ID (nyss skapade) hoppa onödig uppdatering. För befintliga (om vi valt att tillåta)
-            kan man lägga uppdateringslogik här – men i detta flöde räcker det att skapa. */
+      /* 5) (valfri uppdateringspass – avstår i detta flöde) */
       where = "update";
-      const existingById = Object.values(idsBySku); // nyskapade
-      const existingMetaById = new Map<number, { canon?: string }>();
-
-      // (Valfritt) hämta meta och sätt bilder om canon ändrats – hoppar i det här minimala flödet.
       const updates: WooUpdate[] = [];
       let invalidImageUrls = 0;
       const { updated, failedIds } = await updateProductsSafe(updates, ctx);
