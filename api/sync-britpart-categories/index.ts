@@ -2,7 +2,9 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import { getCategory } from "../shared/britpart";
 import { wcGetJSON, wcPostJSON, wcPutJSON } from "../shared/wc";
 
-/** CORS */
+/* --------------------------------------------------------------- */
+/* CORS                                                            */
+/* --------------------------------------------------------------- */
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -19,6 +21,10 @@ type SyncBody = {
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
+/* --------------------------------------------------------------- */
+/* Hjälpare                                                        */
+/* --------------------------------------------------------------- */
+
 /** Bygg en platt lista (BFS) över noder med parentId. */
 async function collectTree(roots: number[], ctx: InvocationContext): Promise<Node[]> {
   const out: Node[] = [];
@@ -30,13 +36,12 @@ async function collectTree(roots: number[], ctx: InvocationContext): Promise<Nod
     const cat = await getCategory(id); // har: id, title, subcategories[], subcategoryIds[]
     out.push({ id: cat.id, title: cat.title, parentId });
 
-    const kids =
-      [
-        ...(cat.subcategories?.map((s) => Number(s.id)) ?? []),
-        ...(cat.subcategoryIds ?? []),
-      ]
-        .map(Number)
-        .filter((n) => Number.isFinite(n));
+    const kids = [
+      ...(cat.subcategories?.map((s) => Number(s.id)) ?? []),
+      ...(cat.subcategoryIds ?? []),
+    ]
+      .map(Number)
+      .filter((n) => Number.isFinite(n));
 
     for (const k of kids) await walk(k, cat.id);
   }
@@ -50,10 +55,16 @@ const slugFor = (bpId: number) => `bp-${bpId}`;
 
 /** Slå upp en kategori i Woo på slug. */
 async function wcFindCategoryIdBySlug(slug: string): Promise<number | null> {
-  const rows = await wcGetJSON<any[]>(`/products/categories?slug=${encodeURIComponent(slug)}&per_page=100`);
+  const rows = await wcGetJSON<any[]>(
+    `/products/categories?slug=${encodeURIComponent(slug)}&per_page=100`
+  );
   if (Array.isArray(rows) && rows[0]?.id) return Number(rows[0].id);
   return null;
 }
+
+/* --------------------------------------------------------------- */
+/* Azure Function                                                  */
+/* --------------------------------------------------------------- */
 
 app.http("sync-britpart-categories", {
   route: "sync-britpart-categories",
@@ -67,14 +78,18 @@ app.http("sync-britpart-categories", {
       const body = (await req.json()) as SyncBody;
       const roots = (body?.roots ?? []).map(Number).filter((n) => Number.isFinite(n));
       if (!roots.length) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, error: "roots[] saknas" } };
+        return {
+          status: 400,
+          headers: CORS,
+          jsonBody: { ok: false, error: "roots[] saknas", fel: "roots[] saknas", where },
+        };
       }
       const apply = !!body?.apply;
 
       where = "collect-tree";
       const nodes = await collectTree(roots, ctx); // BFS med parentId
 
-      // Säkerställ i rätt ordning (parent före child)
+      // Planera åtgärder i ordning (parent före child)
       const wcIdByBpId = new Map<number, number>();
       const plan: Array<{
         bpId: number;
@@ -83,30 +98,51 @@ app.http("sync-britpart-categories", {
         parentBpId: number | null;
         parentWcId: number | null;
         action: "create" | "update" | "noop";
+        actionSv: "skapa" | "uppdatera" | "oförändrad";
         wcId?: number;
       }> = [];
+      const logg: string[] = [];
 
       where = "plan";
       for (const n of nodes) {
         const slug = slugFor(n.id);
         const existingId = await wcFindCategoryIdBySlug(slug);
         const parentWcId = n.parentId != null ? wcIdByBpId.get(n.parentId) ?? null : null;
+
         if (!existingId) {
           plan.push({
-            bpId: n.id, name: n.title ?? String(n.id), slug,
-            parentBpId: n.parentId, parentWcId, action: "create"
+            bpId: n.id,
+            name: n.title ?? String(n.id),
+            slug,
+            parentBpId: n.parentId,
+            parentWcId,
+            action: "create",
+            actionSv: "skapa",
           });
+          logg.push(
+            `Skapas: "${n.title ?? String(n.id)}" (BP ${n.id}) → parent WC ${parentWcId ?? 0}`
+          );
         } else {
           // Hämta befintlig för att kunna uppdatera namn eller parent om det skiljer sig.
           const term = await wcGetJSON<any>(`/products/categories/${existingId}`);
           const needName = (n.title ?? String(n.id)) !== (term?.name ?? "");
           const needParent = (parentWcId ?? 0) !== Number(term?.parent ?? 0);
+          const action: "create" | "update" | "noop" = needName || needParent ? "update" : "noop";
           plan.push({
-            bpId: n.id, name: n.title ?? String(n.id), slug,
-            parentBpId: n.parentId, parentWcId,
-            action: needName || needParent ? "update" : "noop",
+            bpId: n.id,
+            name: n.title ?? String(n.id),
+            slug,
+            parentBpId: n.parentId,
+            parentWcId,
+            action,
+            actionSv: action === "update" ? "uppdatera" : "oförändrad",
             wcId: existingId,
           });
+          logg.push(
+            action === "update"
+              ? `Uppdateras: "${n.title ?? String(n.id)}" (WC ${existingId}) → parent ${parentWcId ?? 0}`
+              : `Oförändrad: "${n.title ?? String(n.id)}" (WC ${existingId})`
+          );
         }
       }
 
@@ -115,7 +151,7 @@ app.http("sync-britpart-categories", {
         for (const item of plan) {
           if (item.action === "noop") {
             // plocka wcId om den saknas
-            if (!item.wcId) item.wcId = await wcFindCategoryIdBySlug(item.slug) ?? undefined;
+            if (!item.wcId) item.wcId = (await wcFindCategoryIdBySlug(item.slug)) ?? undefined;
             if (item.wcId) wcIdByBpId.set(item.bpId, item.wcId);
             continue;
           }
@@ -131,7 +167,7 @@ app.http("sync-britpart-categories", {
             item.wcId = wcId;
           } else {
             // update
-            if (!item.wcId) item.wcId = await wcFindCategoryIdBySlug(item.slug) ?? undefined;
+            if (!item.wcId) item.wcId = (await wcFindCategoryIdBySlug(item.slug)) ?? undefined;
             if (item.wcId) {
               await wcPutJSON(`/products/categories/${item.wcId}`, {
                 name: item.name,
@@ -144,10 +180,31 @@ app.http("sync-britpart-categories", {
       } else {
         // vid torrkörning: hämta wcId där det finns
         for (const item of plan) {
-          if (!item.wcId) item.wcId = await wcFindCategoryIdBySlug(item.slug) ?? undefined;
+          if (!item.wcId) item.wcId = (await wcFindCategoryIdBySlug(item.slug)) ?? undefined;
           if (item.wcId) wcIdByBpId.set(item.bpId, item.wcId);
         }
       }
+
+      // Svenska alias + lättläst lista
+      const counts = {
+        create: plan.filter((p) => p.action === "create").length,
+        update: plan.filter((p) => p.action === "update").length,
+        noop: plan.filter((p) => p.action === "noop").length,
+      };
+      const sammanfattning = {
+        skapas: counts.create,
+        uppdateras: counts.update,
+        oförändrade: counts.noop,
+      };
+
+      const planSvenska = plan.map((p) => ({
+        "åtgärd": p.actionSv,
+        "britpart-id": p.bpId,
+        "namn": p.name,
+        "slug": p.slug,
+        "woo-id": p.wcId ?? null,
+        "förälder (woo-id)": p.parentWcId ?? 0,
+      }));
 
       return {
         status: 200,
@@ -155,17 +212,22 @@ app.http("sync-britpart-categories", {
         jsonBody: {
           ok: true,
           where: "done",
+          var: "klart", // svensk etikett
           applied: apply,
-          counts: {
-            create: plan.filter((p) => p.action === "create").length,
-            update: plan.filter((p) => p.action === "update").length,
-            noop:   plan.filter((p) => p.action === "noop").length,
-          },
-          plan,
+          utfört: apply, // svensk alias
+          counts, // behåll engelska nycklar för kompatibilitet
+          sammanfattning, // svensk version
+          plan, // teknisk plan (eng-nycklar)
+          planSvenska, // lättläst svensk lista
+          logg, // korta rader på svenska
         },
       };
     } catch (e: any) {
-      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: emsg(e) } };
+      return {
+        status: 500,
+        headers: CORS,
+        jsonBody: { ok: false, where, var: where, error: emsg(e), fel: emsg(e) },
+      };
     }
   },
 });
