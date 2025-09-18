@@ -198,30 +198,38 @@ function WooCategoriesPanel() {
   const [roots, setRoots] = useState<string>("91,72"); // exempel: “Defender, Range Rover” – ändra som du vill
 
   async function syncCats(apply: boolean) {
-    try {
-      setSyncBusy(true);
-      setSyncLog(null);
-      const ids = roots
-        .split(",")
-        .map((s) => Number(s.trim()))
-        .filter((n) => Number.isFinite(n) && n > 0);
+  try {
+    setSyncBusy(true);
+    setSyncLog(null);
 
-      const r = await fetch("/api/sync-britpart-categories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roots: ids, apply }),
-      });
-      const json = await r.json();
-      if (!r.ok) throw new Error(json?.error || `HTTP ${r.status}`);
-      setSyncLog(json);
-      // uppdatera listan i tabellen efter verklig körning
-      if (apply) loadCats(page, perPage);
-    } catch (e: any) {
-      alert(e?.message || String(e));
-    } finally {
-      setSyncBusy(false);
+    const ids = roots
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    const r = await fetch("/api/sync-britpart-categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roots: ids, apply }),
+    });
+
+    const txt = await r.text();      // <-- läs alltid text först
+    let json: any = {};
+    try { json = txt ? JSON.parse(txt) : {}; } catch { json = {}; }
+
+    if (!r.ok) {
+      // Snyggare fel än “Unexpected end of JSON…”
+      const msg = json?.error || `HTTP ${r.status}${txt ? `: ${txt.slice(0,200)}` : ""}`;
+      throw new Error(msg);
     }
+
+    setSyncLog(json);                // success
+  } catch (e: any) {
+    alert(e?.message || String(e));
+  } finally {
+    setSyncBusy(false);
   }
+}
 
   async function loadCats(p: number, pp: number) {
     try {

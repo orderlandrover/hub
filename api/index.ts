@@ -22,3 +22,6 @@ import "./price-upload-from-blob"; // om du använder den efter SAS-steget
 import "./price-upload-probe"; 
 import "./import-probe";
 import "./britpart-probe-categories";
+
+// 🔻 Lägg till denna rad för din nya endpoint
+import "./sync-britpart-categories";
