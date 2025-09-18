@@ -193,31 +193,81 @@ function WooCategoriesPanel() {
   const [data, setData] = useState<ListResponse<WCCategory> | null>(null);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(50);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncLog, setSyncLog] = useState<any | null>(null);
+  const [roots, setRoots] = useState<string>("91,72"); // exempel: “Defender, Range Rover” – ändra som du vill
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const url = `${API.WC_CATEGORIES}?page=${page}&per_page=${perPage}`;
-        const res = await jsonFetch<ListResponse<WCCategory>>(url);
-        setData(res);
-      } catch {
-        setData({ items: [], total: 0, pages: 1, page: 1 });
-      }
-    })();
-  }, [page, perPage]);
+  async function syncCats(apply: boolean) {
+    try {
+      setSyncBusy(true);
+      setSyncLog(null);
+      const ids = roots
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      const r = await fetch("/api/sync-britpart-categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roots: ids, apply }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json?.error || `HTTP ${r.status}`);
+      setSyncLog(json);
+      // uppdatera listan i tabellen efter verklig körning
+      if (apply) loadCats(page, perPage);
+    } catch (e: any) {
+      alert(e?.message || String(e));
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function loadCats(p: number, pp: number) {
+    try {
+      const url = `${API.WC_CATEGORIES}?page=${p}&per_page=${pp}`;
+      const res = await jsonFetch<ListResponse<WCCategory>>(url);
+      setData(res);
+    } catch {
+      setData({ items: [], total: 0, pages: 1, page: 1 });
+    }
+  }
+
+  useEffect(() => { loadCats(page, perPage); }, [page, perPage]);
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <label className="text-sm">Per sida</label>
-        <input
-          type="number"
-          className="w-24 border border-gray-300 rounded-xl px-3 py-1.5 text-sm"
-          value={perPage}
-          onChange={(e) => setPerPage(Math.max(5, Number(e.target.value) || 25))}
-        />
-        <Badge>Totalt: {data?.total ?? "–"}</Badge>
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Britpart-rötter (kommaseparerat)</label>
+          <input
+            value={roots}
+            onChange={(e) => setRoots(e.target.value)}
+            className="w-64 border border-gray-300 rounded-xl px-3 py-1.5 text-sm"
+            placeholder="t.ex. 91,72"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" disabled={syncBusy} onClick={() => syncCats(false)}>
+            {syncBusy ? "Kör…" : "Torrkör synk"}
+          </Button>
+          <Button disabled={syncBusy} onClick={() => syncCats(true)}>
+            {syncBusy ? "Kör…" : "Verkställ synk"}
+          </Button>
+        </div>
+        <div className="flex-1" />
+        <div className="flex items-center gap-3">
+          <label className="text-sm">Per sida</label>
+          <input
+            type="number"
+            className="w-24 border border-gray-300 rounded-xl px-3 py-1.5 text-sm"
+            value={perPage}
+            onChange={(e) => setPerPage(Math.max(5, Number(e.target.value) || 25))}
+          />
+          <Badge>Totalt: {data?.total ?? "–"}</Badge>
+        </div>
       </div>
+
       <div className="border border-gray-200 rounded-xl overflow-hidden">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
@@ -238,20 +288,33 @@ function WooCategoriesPanel() {
           </tbody>
         </table>
       </div>
+
       {!!data && (
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
             Föregående
           </Button>
-          <Badge>
-            Sida {data.page} / {data.pages}
-          </Badge>
+          <Badge>Sida {data.page} / {data.pages}</Badge>
           <Button
             variant="outline"
-            onClick={() => setPage((p) => Math.min(data.pages, p + 1))} disabled={page >= (data.pages || 1)}
+            onClick={() => setPage((p) => Math.min(data.pages, p + 1))}
+            disabled={page >= (data.pages || 1)}
           >
             Nästa
           </Button>
+        </div>
+      )}
+
+      {syncLog && (
+        <div className="p-3 bg-gray-50 rounded-xl border text-xs font-mono max-h-64 overflow-auto">
+          <div>applied: {String(syncLog.applied)}</div>
+          <div>counts: {JSON.stringify(syncLog.counts)}</div>
+          <div className="mt-2">plan (förkortad):</div>
+          {Array.isArray(syncLog.plan) && syncLog.plan.slice(0, 200).map((p: any, i: number) => (
+            <div key={i}>
+              {p.action}  bp:{p.bpId}  name:{p.name}  parentWc:{p.parentWcId ?? 0}  wc:{p.wcId ?? "-"}
+            </div>
+          ))}
         </div>
       )}
     </div>

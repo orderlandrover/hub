@@ -2,6 +2,7 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import {
   britpartGetPartCodesForCategoriesFiltered,
   britpartGetBasicForSkus,
+  getCategory, // <-- nytt för att kunna hämta namn vid on-demand
 } from "../shared/britpart";
 import {
   wcFindProductIdBySku,
@@ -12,9 +13,6 @@ import {
 } from "../shared/wc";
 
 /* --------------------------------------------------------------- */
-/* CORS + utils                                                    */
-/* --------------------------------------------------------------- */
-
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -23,94 +21,74 @@ const CORS = {
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 const isHttpUrl = (s?: string) => typeof s === "string" && /^https?:\/\//i.test(s || "");
-/** Woo sideloadar själv → http(s) räcker som valid bildkälla */
 const validImage = (url?: string) => isHttpUrl(url);
-
-/** Kanonisk bild-URL (utan query) för att känna igen samma källa mellan körningar */
 const canon = (u?: string) => {
   if (!u) return null;
   try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return null; }
 };
 
-/* --------------------------------------------------------------- */
-/* Britpart→Woo kategori-mappning                                  */
-/* --------------------------------------------------------------- */
-/**
- * 1) Direkt ID-mappning (Britpart-ID -> Woo-ID)
- * 2) Namnmappning (Britpart-ID -> Woo-kategorins namn) som slås upp mot Woo
- * 3) Fallback: om en Woo-kategori heter exakt t.ex. "46" så mappas Britpart 46 dit
- */
+/* --------------------- Woo-cat helpers (auto ensure) --------------------- */
+const slugFor = (bpId: number) => `bp-${bpId}`;
 
-const BRITPART_TO_WC: Record<number, number> = {
-  // Exempel:
-  // 91: 123, // Britpart 91 -> Woo ID 123
-};
-
-const BRITPART_TO_WC_NAMES: Record<number, string> = {
-  // Exempel:
-  // 91: "Defender",
-  // 92: "Defender 1983-2006",
-  // 93: "Defender 2007-2016",
-  // 94: "Defender 2020-",
-  // 80: "Discovery 4",
-  // 81: "Discovery 5",
-  // 82: "Freelander",
-  // 68: "Land Rover",
-  // osv...
-};
-
-let wooNameMapCache: Map<string, number> | null = null;
-
-async function loadWooCategoryNameMap(): Promise<Map<string, number>> {
-  if (wooNameMapCache) return wooNameMapCache;
-  const out = new Map<string, number>();
-  let page = 1;
-  while (true) {
-    const arr = await wcGetJSON<any[]>(`/products/categories?per_page=100&page=${page}`);
-    const list = Array.isArray(arr) ? arr : [];
-    if (!list.length) break;
-    for (const c of list) {
-      if (typeof c?.id === "number" && typeof c?.name === "string") {
-        out.set(c.name.trim().toLowerCase(), c.id);
-      }
-    }
-    if (list.length < 100) break;
-    page++;
-  }
-  wooNameMapCache = out;
-  return out;
+async function wcFindCategoryIdBySlug(slug: string): Promise<number | null> {
+  const rows = await wcGetJSON<any[]>(`/products/categories?slug=${encodeURIComponent(slug)}&per_page=100`);
+  if (Array.isArray(rows) && rows[0]?.id) return Number(rows[0].id);
+  return null;
 }
 
-async function wcCatsFromBritpartCategoryIds(categoryIds?: number[]): Promise<{ id: number }[] | undefined> {
-  if (!Array.isArray(categoryIds) || categoryIds.length === 0) return undefined;
+/** Skapa/uppdatera en Woo-kategori för given Britpart-id, returnera Woo-id. */
+async function ensureWooCategoryForBritpart(bpId: number, parentWcId?: number | null): Promise<number> {
+  const slug = slugFor(bpId);
+  const existingId = await wcFindCategoryIdBySlug(slug);
+  const bp = await getCategory(bpId);
+  const name = bp?.title ?? String(bpId);
+  const parent = parentWcId ?? 0;
 
-  const byName = await loadWooCategoryNameMap();
-  const set = new Set<number>();
-
-  for (const cid of categoryIds) {
-    // 1) direkt ID
-    const direct = BRITPART_TO_WC[cid];
-    if (typeof direct === "number" && direct > 0) { set.add(direct); continue; }
-
-    // 2) via namn
-    const wantName = BRITPART_TO_WC_NAMES[cid];
-    if (wantName) {
-      const id = byName.get(wantName.trim().toLowerCase());
-      if (id) { set.add(id); continue; }
+  if (!existingId) {
+    const created = await wcPostJSON<any>(`/products/categories`, {
+      name, slug, parent,
+      description: `Britpart kategori #${bpId}`,
+    });
+    return Number(created?.id);
+  } else {
+    // uppdatera namn/parent om det skiljer sig
+    const term = await wcGetJSON<any>(`/products/categories/${existingId}`);
+    const needName = name !== (term?.name ?? "");
+    const needParent = parent !== Number(term?.parent ?? 0);
+    if (needName || needParent) {
+      await wcPutJSON(`/products/categories/${existingId}`, { name, parent });
     }
-
-    // 3) fallback – om Woo-kategori råkar heta "46" etc.
-    const byNumberName = byName.get(String(cid).toLowerCase());
-    if (byNumberName) { set.add(byNumberName); continue; }
+    return existingId;
   }
-
-  return set.size ? Array.from(set).map((id) => ({ id })) : undefined;
 }
 
-/* --------------------------------------------------------------- */
-/* Batch helpers (med fallback per item)                           */
-/* --------------------------------------------------------------- */
+/** Bygg en cache för alla bp-categoryIds som används i aktuell import-körning. */
+async function mapBritpartCatsToWoo(
+  allBpCatIds: number[],
+): Promise<Map<number, number>> {
+  const unique = Array.from(new Set(allBpCatIds.filter((n) => Number.isFinite(n) && n > 0)));
+  const map = new Map<number, number>();
 
+  // Föräldrar i Britpart-API:t kräver att vi vet parenten. Vi använder sync-endpointen
+  // för fullständig träd-synk. Här vid "on-demand" skapar vi dem utan parent (root),
+  // vilket räcker för att kunna kategorisera produkten. Kunden kan sedan köra
+  // sync-britpart-categories (apply=true) för att sätta hierarchy korrekt.
+  for (const bpId of unique) {
+    const wcId = await ensureWooCategoryForBritpart(bpId, null);
+    map.set(bpId, wcId);
+  }
+  return map;
+}
+
+function wcCatsFromMap(categoryIds: number[] | undefined, m: Map<number, number>) {
+  if (!Array.isArray(categoryIds) || !categoryIds.length) return undefined;
+  const ids = Array.from(
+    new Set(categoryIds.map((bp) => m.get(bp)).filter((x): x is number => typeof x === "number"))
+  );
+  return ids.length ? ids.map((id) => ({ id })) : undefined;
+}
+
+/* -------------------------- Batch helpers (samma) ------------------------- */
 async function createProductsSafe(items: any[], ctx: InvocationContext) {
   let created = 0;
   const idsBySku: Record<string, number> = {};
@@ -120,8 +98,7 @@ async function createProductsSafe(items: any[], ctx: InvocationContext) {
     const chunk = items.slice(i, i + 40);
     try {
       const res = await wcPostJSON<{ create?: Array<{ id: number; sku?: string }> }>(
-        `/products/batch`,
-        { create: chunk }
+        `/products/batch`, { create: chunk }
       );
       const arr = Array.isArray(res.create) ? res.create : [];
       for (const c of arr) if (c?.id && c?.sku) idsBySku[c.sku] = Number(c.id);
@@ -157,7 +134,9 @@ async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) 
   for (let i = 0; i < updates.length; i += 80) {
     const chunk = updates.slice(i, i + 80);
     try {
-      const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, { update: chunk });
+      const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(
+        `/products/batch`, { update: chunk }
+      );
       updated += Array.isArray(res.update) ? res.update.length : 0;
     } catch (e: any) {
       ctx.warn?.(`Batch update fail (${chunk.length} st): ${emsg(e)} → fallback per item`);
@@ -170,24 +149,15 @@ async function updateProductsSafe(updates: WooUpdate[], ctx: InvocationContext) 
   return { updated, failedIds };
 }
 
-/* --------------------------------------------------------------- */
-/* Types                                                           */
-/* --------------------------------------------------------------- */
-
+/* ----------------------------- Types & handler ---------------------------- */
 type ImportRunBody = {
   ids: number[];
   pageSize?: number;
-  /** importera endast från dessa leaf-ID (valda i UI) */
   leafIds?: number[];
-  /** valfritt: begränsa till exakt dessa SKU */
   restrictSkus?: string[];
   roundingMode?: "none" | "nearest" | "up" | "down";
   roundTo?: number;
 };
-
-/* --------------------------------------------------------------- */
-/* Azure Function: POST /api/import-run                            */
-/* --------------------------------------------------------------- */
 
 app.http("import-run", {
   route: "import-run",
@@ -204,22 +174,20 @@ app.http("import-run", {
         return { status: 400, headers: CORS, jsonBody: { ok: false, error: "No ids" } };
       }
 
-      // Rimlig chunk-storlek för att inte slå i tidsgränser
       const PAGE_MAX = 50;
       const pageSize = Math.max(1, Math.min(Number(body?.pageSize || 25), PAGE_MAX));
 
-      /* 1) Samla alla SKU (unika) */
+      /* 1) Samla SKU */
       where = "collect-skus";
-      let allSkus = Array.from(
-        new Set((await britpartGetPartCodesForCategoriesFiltered(ids, body.leafIds)).map(String))
-      );
+      let allSkus = Array.from(new Set(
+        (await britpartGetPartCodesForCategoriesFiltered(ids, body.leafIds)).map(String)
+      ));
       if (Array.isArray(body.restrictSkus) && body.restrictSkus.length) {
         const allow = new Set(body.restrictSkus.map(String));
         allSkus = allSkus.filter((s) => allow.has(s));
       }
-      ctx.log?.(`collect-skus: roots=${ids.join(",")} leafs=${(body.leafIds||[]).join(",")||"-"} total=${allSkus.length}`);
 
-      /* 2) Filtrera bort sådant som redan finns i Woo → nästa körning tar "nästa sida" */
+      /* 2) Filtrera bort existerande så vi tar “nästa sida” vid nästa körning */
       where = "filter-existing";
       const existingAll = new Set<string>();
       {
@@ -227,55 +195,48 @@ app.http("import-run", {
         const conc = 10;
         async function worker() {
           while (i < allSkus.length) {
-            const sku = allSkus[i++]!;
+            const sku = allSkus[i++];
             try {
               const id = await wcFindProductIdBySku(sku);
               if (id) existingAll.add(sku);
-            } catch (e) {
-              ctx.warn?.(`lookup(all) fail ${sku}: ${emsg(e)}`);
-            }
+            } catch (e) { ctx.warn?.(`lookup(all) fail ${sku}: ${emsg(e)}`); }
           }
         }
         await Promise.all(Array.from({ length: conc }, worker));
       }
-
       const pendingSkus = allSkus.filter((s) => !existingAll.has(s));
       const skus = pendingSkus.slice(0, pageSize);
       const remainingSkus = Math.max(0, pendingSkus.length - skus.length);
 
-      if (skus.length === 0) {
+      if (!skus.length) {
         return {
-          status: 200,
-          headers: CORS,
-          jsonBody: {
-            ok: true,
-            where: "nothing-to-do",
-            selectedCategoryIds: ids,
-            usedLeafIds: body.leafIds ?? [],
+          status: 200, headers: CORS, jsonBody: {
+            ok: true, where: "nothing-to-do",
+            selectedCategoryIds: ids, usedLeafIds: body.leafIds ?? [],
             restrictedToSkus: body.restrictSkus?.length ?? 0,
-            pageSize,
-            processedSkus: 0,
-            totalSkus: allSkus.length,
-            remainingSkus,
-            hasMore: remainingSkus > 0,
-            exists: existingAll.size,
-            created: 0,
-            updatedWithMeta: 0,
-            invalidImageUrls: 0,
-            createFailedSkus: [],
-            updateFailedIds: [],
+            pageSize, processedSkus: 0,
+            totalSkus: allSkus.length, remainingSkus, hasMore: remainingSkus > 0,
+            exists: existingAll.size, created: 0, updatedWithMeta: 0,
+            invalidImageUrls: 0, createFailedSkus: [], updateFailedIds: [],
             sampleSkus: allSkus.slice(0, 10),
-          },
+          }
         };
       }
 
-      /* 3) Basdata från Britpart */
+      /* 3) Basdata */
       where = "fetch-basics";
       const basics = await britpartGetBasicForSkus(skus);
-      const imgOkCount = Object.values(basics).filter((b) => validImage(b.imageUrl)).length;
-      ctx.log?.(`fetch-basics: basics=${Object.keys(basics).length}, validImages=${imgOkCount}`);
 
-      /* 4) Skapa saknade (draft) – sätt bild + meta + (ev.) kategorier */
+      /* 4) Mappa/Skapa Woo-kategorier för ALLA bpCategoryIds som förekommer i denna chunk */
+      where = "ensure-categories";
+      const allBpCatIds: number[] = [];
+      for (const sku of skus) {
+        const arr = (basics as any)[sku]?.categoryIds as number[] | undefined;
+        if (Array.isArray(arr)) allBpCatIds.push(...arr);
+      }
+      const wcMap = await mapBritpartCatsToWoo(allBpCatIds);
+
+      /* 5) Skapa saknade produkter (inkl kategorier) */
       where = "create";
       const createPayloads: any[] = skus.map((sku) => {
         const b = basics[sku] || {};
@@ -286,6 +247,8 @@ app.http("import-run", {
         if ((b as any).imageSource) meta.push({ key: "_lr_source", value: (b as any).imageSource });
         if (Array.isArray(b.categoryIds)) meta.push({ key: "_lr_britpart_categories", value: JSON.stringify(b.categoryIds) });
 
+        const cats = wcCatsFromMap((b as any).categoryIds, wcMap);
+
         const payload: any = {
           name: (b.title && b.title.trim()) || sku,
           sku,
@@ -295,42 +258,20 @@ app.http("import-run", {
           short_description: b.description,
           meta_data: meta.length ? meta : undefined,
         };
-
         if (validImage(b.imageUrl)) payload.images = [{ src: b.imageUrl, position: 0 }];
-
-        // Kategorier: mappa via ID/namn (se ovan)
-        (payload as any).categories = undefined; // default
-        if (Array.isArray(b.categoryIds) && b.categoryIds.length) {
-          // vikt: många delar har flera Britpart-kategorier
-          // vi mappar dem alla och låter Woo hantera hierarkin
-          // (wcCatsFromBritpartCategoryIds hanterar cache och fallback)
-          // Obs: funktionen är async → vi sätter categories nedan i batch
-        }
+        if (cats) payload.categories = cats;
 
         return payload;
       });
 
-      // Hämta och sätt kategorier (async för alla basics)
-      const allCats = await Promise.all(
-        skus.map(async (sku) => {
-          const b = basics[sku] || {};
-          return Array.isArray(b.categoryIds) ? await wcCatsFromBritpartCategoryIds(b.categoryIds) : undefined;
-        })
-      );
-      for (let i = 0; i < createPayloads.length; i++) {
-        if (allCats[i]?.length) (createPayloads[i] as any).categories = allCats[i];
-      }
-
       const { created, idsBySku, failedSkus } = await createProductsSafe(createPayloads, ctx);
-      ctx.log?.(`create: tried=${skus.length}, created=${created}, failed=${failedSkus.length}`);
 
-      /* 5) (valfri uppdateringspass – avstår i detta flöde) */
+      /* 6) (valfritt) uppdatera redan existerande i denna chunk – hoppar här */
       where = "update";
       const updates: WooUpdate[] = [];
-      let invalidImageUrls = 0;
       const { updated, failedIds } = await updateProductsSafe(updates, ctx);
 
-      /* 6) Svar */
+      /* 7) Svar */
       return {
         status: 200,
         headers: CORS,
@@ -348,15 +289,14 @@ app.http("import-run", {
           exists: existingAll.size,
           created,
           updatedWithMeta: updated,
-          invalidImageUrls,
+          invalidImageUrls: 0,
           createFailedSkus: failedSkus,
           updateFailedIds: failedIds,
           sampleSkus: skus.slice(0, 10),
         },
       };
     } catch (e: any) {
-      const msg = emsg(e);
-      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: msg } };
+      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: emsg(e) } };
     }
   },
 });
