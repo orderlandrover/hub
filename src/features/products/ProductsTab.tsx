@@ -5,11 +5,11 @@ type WCProduct = {
   id: number;
   name: string;
   sku?: string;
-  price?: number | string;
-  stock_status?: string;
-  categories?: { id: number; name?: string }[];
+  price: number | null;                     // numeriskt pris från backend
+  stock_status?: string | null;             // "instock" | "outofstock" | ...
+  status?: string | null;                   // "publish" | "draft" | ...
+  categories: { id: number; name?: string }[];
   images?: { src: string }[];
-  status?: string;
 };
 
 type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
@@ -24,12 +24,14 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
 }
 
 async function fetchProducts(page: number, perPage: number, search = "") {
-  const url = `/api/products-list?page=${page}&per_page=${perPage}${search ? `&search=${encodeURIComponent(search)}` : ""}`;
+  const url = `/api/products-list?page=${page}&per_page=${perPage}${
+    search ? `&search=${encodeURIComponent(search)}` : ""
+  }`;
   return jsonFetch<ListResponse<WCProduct>>(url);
 }
 
-async function fetchCategories(perPage = 100) {
-  // Hämtar första sidan; hos er finns ~30 st så 100 räcker gott.
+async function fetchCategories(perPage = 200) {
+  // Räcker gott då ni ligger runt 30 st total.
   const url = `/api/wc-categories?page=1&per_page=${perPage}`;
   return jsonFetch<ListResponse<WCCategory>>(url);
 }
@@ -82,6 +84,12 @@ function Button({
   );
 }
 
+/* ----------------------------- Helpers ---------------------------- */
+const fmtPrice = (v?: number | null) => (v == null ? "—" : new Intl.NumberFormat("sv-SE").format(v));
+
+const humanStock = (s?: string | null) =>
+  s === "instock" ? "i lager" : s === "outofstock" ? "slut" : s || "—";
+
 /* --------------------------- ProductsTab --------------------------- */
 export default function ProductsTab() {
   const [data, setData] = useState<ListResponse<WCProduct> | null>(null);
@@ -95,13 +103,20 @@ export default function ProductsTab() {
 
   // urval
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const allOnPage = useMemo(() => (data?.items || []).map(p => p.id), [data]);
-  const allChecked = allOnPage.length > 0 && allOnPage.every(id => selectedIds.includes(id));
+  const allOnPage = useMemo(() => (data?.items || []).map((p) => p.id), [data]);
+  const allChecked = allOnPage.length > 0 && allOnPage.every((id) => selectedIds.includes(id));
 
   // bulk-kontroller
   const [action, setAction] = useState<"set" | "add" | "remove">("set");
   const [categoryId, setCategoryId] = useState<number>(0);
   const [running, setRunning] = useState(false);
+
+  // snabb lookup för kategori-id → namn (och parent)
+  const catMap = useMemo(() => {
+    const m = new Map<number, WCCategory>();
+    for (const c of cats) m.set(c.id, c);
+    return m;
+  }, [cats]);
 
   // hämta produkter
   useEffect(() => {
@@ -112,7 +127,7 @@ export default function ProductsTab() {
         const res = await fetchProducts(page, perPage, search);
         if (!alive) return;
         setData(res);
-        setSelectedIds([]); // töm urval vid sidbyte
+        setSelectedIds([]); // töm urval vid sidbyte/sök
       } catch (e) {
         console.error(e);
         if (!alive) return;
@@ -126,7 +141,7 @@ export default function ProductsTab() {
     };
   }, [page, perPage, search]);
 
-  // hämta kategorier
+  // hämta kategorier (en gång)
   useEffect(() => {
     (async () => {
       try {
@@ -143,13 +158,23 @@ export default function ProductsTab() {
   }, []);
 
   const toggleOne = (id: number) =>
-    setSelectedIds(xs => (xs.includes(id) ? xs.filter(x => x !== id) : [...xs, id]));
+    setSelectedIds((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]));
 
   const toggleAllOnPage = () =>
-    setSelectedIds(allChecked ? selectedIds.filter(id => !allOnPage.includes(id)) : Array.from(new Set([...selectedIds, ...allOnPage])));
+    setSelectedIds(
+      allChecked ? selectedIds.filter((id) => !allOnPage.includes(id)) : Array.from(new Set([...selectedIds, ...allOnPage]))
+    );
 
-  const currentCatLabel = (ids?: { id: number }[]) =>
-    (ids || []).map(c => `#${c.id}`).join(", ") || "—";
+  // Bygg läsbar etikett av produktens kategorier (namn om tillgängligt; annars #id)
+  const currentCatLabel = (rows?: { id: number; name?: string }[]) => {
+    if (!rows || rows.length === 0) return "—";
+    const parts = rows.map((r) => {
+      if (r.name) return r.name;
+      const c = catMap.get(r.id);
+      return c?.name ? c.name : `#${r.id}`;
+    });
+    return parts.join(", ");
+  };
 
   const doBulkUpdate = async () => {
     if (!selectedIds.length) return alert("Välj minst en produkt.");
@@ -157,16 +182,13 @@ export default function ProductsTab() {
     try {
       setRunning(true);
       const res = await bulkUpdateCategories({ productIds: selectedIds, action, categoryId });
-      console.log("bulk result", res);
-
       const updated = Number(res?.updated || 0);
       const failed = Array.isArray(res?.failedIds) ? res.failedIds.length : 0;
       const skipped = Array.isArray(res?.skipped) ? res.skipped.length : 0;
 
-      alert(`Klart.
-Uppdaterade: ${updated}
-Hoppade över (ingen ändring behövdes): ${skipped}
-Misslyckade: ${failed}`);
+      alert(
+        `Klart.\nUppdaterade: ${updated}\nHoppade över (ingen ändring): ${skipped}\nMisslyckade: ${failed}`
+      );
 
       // Ladda om sidan vi står på för att se nya kategorier
       const refreshed = await fetchProducts(page, perPage, search);
@@ -189,7 +211,7 @@ Misslyckade: ${failed}`);
           <select
             className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
             value={action}
-            onChange={e => setAction(e.target.value as any)}
+            onChange={(e) => setAction(e.target.value as any)}
             disabled={running}
           >
             <option value="set">Byt till (ersätt)</option>
@@ -201,15 +223,18 @@ Misslyckade: ${failed}`);
         <div>
           <label className="block text-sm font-medium mb-1">Woo-kategori</label>
           <select
-            className="border border-gray-300 rounded-xl px-3 py-2 text-sm min-w-[220px]"
+            className="border border-gray-300 rounded-xl px-3 py-2 text-sm min-w-[240px]"
             value={categoryId}
-            onChange={e => setCategoryId(Number(e.target.value) || 0)}
+            onChange={(e) => setCategoryId(Number(e.target.value) || 0)}
             disabled={catsLoading || running}
           >
-            <option value={0} disabled>— Välj kategori —</option>
-            {cats.map(c => (
+            <option value={0} disabled>
+              — Välj kategori —
+            </option>
+            {cats.map((c) => (
               <option key={c.id} value={c.id}>
-                #{c.id} — {c.name}{c.parent ? ` (parent #${c.parent})` : ""}
+                #{c.id} — {c.name}
+                {c.parent ? ` (parent #${c.parent})` : ""}
               </option>
             ))}
           </select>
@@ -223,7 +248,10 @@ Misslyckade: ${failed}`);
           <label className="text-sm text-gray-600">Sök</label>
           <input
             value={search}
-            onChange={e => { setPage(1); setSearch(e.target.value); }}
+            onChange={(e) => {
+              setPage(1);
+              setSearch(e.target.value);
+            }}
             placeholder="SKU eller namn…"
             className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
           />
@@ -232,7 +260,10 @@ Misslyckade: ${failed}`);
             type="number"
             className="w-20 border border-gray-300 rounded-xl px-3 py-2 text-sm"
             value={perPage}
-            onChange={e => { setPage(1); setPerPage(Math.max(10, Number(e.target.value) || 100)); }}
+            onChange={(e) => {
+              setPage(1);
+              setPerPage(Math.max(10, Number(e.target.value) || 100));
+            }}
           />
         </div>
       </div>
@@ -260,7 +291,7 @@ Misslyckade: ${failed}`);
             </tr>
           </thead>
           <tbody>
-            {(data?.items || []).map(p => (
+            {(data?.items || []).map((p) => (
               <tr key={p.id} className="odd:bg-white even:bg-gray-50">
                 <td className="px-3 py-2">
                   <input
@@ -272,8 +303,8 @@ Misslyckade: ${failed}`);
                 </td>
                 <td className="px-3 py-2">{p.name}</td>
                 <td className="px-3 py-2 font-mono">{p.sku || "—"}</td>
-                <td className="px-3 py-2">{p.price ?? "—"}</td>
-                <td className="px-3 py-2">{p.stock_status || "—"}</td>
+                <td className="px-3 py-2 text-right">{fmtPrice(p.price)}</td>
+                <td className="px-3 py-2">{humanStock(p.stock_status)}</td>
                 <td className="px-3 py-2">{p.status || "—"}</td>
                 <td className="px-3 py-2">{currentCatLabel(p.categories)}</td>
                 <td className="px-3 py-2 font-mono">{p.id}</td>
@@ -281,7 +312,9 @@ Misslyckade: ${failed}`);
             ))}
             {!loading && (data?.items || []).length === 0 && (
               <tr>
-                <td className="px-3 py-6 text-center text-gray-500" colSpan={8}>Inga produkter funna.</td>
+                <td className="px-3 py-6 text-center text-gray-500" colSpan={8}>
+                  Inga produkter funna.
+                </td>
               </tr>
             )}
           </tbody>
@@ -291,13 +324,15 @@ Misslyckade: ${failed}`);
       {/* Paginering */}
       {!!data && (
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1 || loading}>
+          <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1 || loading}>
             Föregående
           </Button>
-          <Badge>Sida {data.page} / {data.pages}</Badge>
+          <Badge>
+            Sida {data.page} / {data.pages}
+          </Badge>
           <Button
             variant="outline"
-            onClick={() => setPage(p => Math.min(data.pages || 1, p + 1))}
+            onClick={() => setPage((p) => Math.min(data.pages || 1, p + 1))}
             disabled={page >= (data.pages || 1) || loading}
           >
             Nästa
