@@ -19,6 +19,86 @@ type ProbeResponse = {
   sampleAll: string[];
 };
 
+/* -------------------------- Login-gate -------------------------- */
+function LoginGate({ children }: { children: React.ReactNode }) {
+  const [state, setState] = React.useState<"checking" | "need-login" | "ok">("checking");
+  const [u, setU] = React.useState("");
+  const [p, setP] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/auth-me", { credentials: "include" });
+        setState(r.ok ? "ok" : "need-login");
+      } catch {
+        setState("need-login");
+      }
+    })();
+  }, []);
+
+  const doLogin = async () => {
+    try {
+      setBusy(true);
+      setErr(null);
+      const r = await fetch("/api/auth-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      if (!r.ok) throw new Error(await r.text().catch(() => "Login failed"));
+      setState("ok");
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state === "checking") {
+    return (
+      <div className="min-h-screen grid place-items-center text-gray-600">
+        <div>Laddar…</div>
+      </div>
+    );
+  }
+  if (state === "need-login") {
+    return (
+      <div className="min-h-screen grid place-items-center bg-gray-50">
+        <div className="bg-white border rounded-2xl p-6 shadow w-[360px]">
+          <h1 className="text-lg font-semibold mb-4">Logga in</h1>
+          <div className="space-y-3">
+            <input
+              className="w-full border rounded-xl px-3 py-2 text-sm"
+              placeholder="Användarnamn"
+              value={u}
+              onChange={(e) => setU(e.target.value)}
+            />
+            <input
+              className="w-full border rounded-xl px-3 py-2 text-sm"
+              placeholder="Lösenord"
+              type="password"
+              value={p}
+              onChange={(e) => setP(e.target.value)}
+            />
+            {err && <div className="text-sm text-red-600">{err}</div>}
+            <button
+              onClick={doLogin}
+              disabled={busy}
+              className="w-full px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {busy ? "Loggar in…" : "Logga in"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
 /* --------------------------- Utils / API --------------------------- */
 const API = {
   BRITPART_SUBCATS: "/api/britpart-subcategories",
@@ -27,10 +107,7 @@ const API = {
 };
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const r = await fetch(input, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const r = await fetch(input, { headers: { "Content-Type": "application/json" }, ...init });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text().catch(() => "")}`);
   return (await r.json()) as T;
 }
@@ -126,9 +203,8 @@ function SubcategorySelector({
         }));
         const sorted = normalized.sort((a, b) => a.title.localeCompare(b.title, "sv"));
         setSubcats(sorted);
-      } catch (e) {
-        console.error(e);
-        setSubcats([]); // failsafe
+      } catch {
+        setSubcats([]);
       } finally {
         setLoading(false);
       }
@@ -188,48 +264,46 @@ function SubcategorySelector({
   );
 }
 
-/* ------------------------------ Kategorier (ref) ------------------------------ */
+/* ------------------------------ Kategorier (ref + synk) ------------------------------ */
 function WooCategoriesPanel() {
   const [data, setData] = useState<ListResponse<WCCategory> | null>(null);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(50);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncLog, setSyncLog] = useState<any | null>(null);
-  const [roots, setRoots] = useState<string>("91,72"); // exempel: “Defender, Range Rover” – ändra som du vill
+  const [roots, setRoots] = useState<string>("91,72"); // ändra som du vill
 
   async function syncCats(apply: boolean) {
-  try {
-    setSyncBusy(true);
-    setSyncLog(null);
+    try {
+      setSyncBusy(true);
+      setSyncLog(null);
 
-    const ids = roots
-      .split(",")
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isFinite(n) && n > 0);
+      const ids = roots
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
 
-    const r = await fetch("/api/sync-britpart-categories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roots: ids, apply }),
-    });
+      const r = await fetch("/api/sync-britpart-categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roots: ids, apply }),
+      });
 
-    const txt = await r.text();      // <-- läs alltid text först
-    let json: any = {};
-    try { json = txt ? JSON.parse(txt) : {}; } catch { json = {}; }
+      const txt = await r.text();
+      let json: any = {};
+      try { json = txt ? JSON.parse(txt) : {}; } catch { json = {}; }
 
-    if (!r.ok) {
-      // Snyggare fel än “Unexpected end of JSON…”
-      const msg = json?.error || `HTTP ${r.status}${txt ? `: ${txt.slice(0,200)}` : ""}`;
-      throw new Error(msg);
+      if (!r.ok) {
+        const msg = json?.error || `HTTP ${r.status}${txt ? `: ${txt.slice(0, 200)}` : ""}`;
+        throw new Error(msg);
+      }
+      setSyncLog(json);
+    } catch (e: any) {
+      alert(e?.message || String(e));
+    } finally {
+      setSyncBusy(false);
     }
-
-    setSyncLog(json);                // success
-  } catch (e: any) {
-    alert(e?.message || String(e));
-  } finally {
-    setSyncBusy(false);
   }
-}
 
   async function loadCats(p: number, pp: number) {
     try {
@@ -315,8 +389,8 @@ function WooCategoriesPanel() {
 
       {syncLog && (
         <div className="p-3 bg-gray-50 rounded-xl border text-xs font-mono max-h-64 overflow-auto">
-          <div>applied: {String(syncLog.applied)}</div>
-          <div>counts: {JSON.stringify(syncLog.counts)}</div>
+          <div>verkställd: {String(syncLog.applied)}</div>
+          <div>ändringar: {JSON.stringify(syncLog.counts)}</div>
           <div className="mt-2">plan (förkortad):</div>
           {Array.isArray(syncLog.plan) && syncLog.plan.slice(0, 200).map((p: any, i: number) => (
             <div key={i}>
@@ -366,10 +440,7 @@ export default function App() {
   const clearLeafs = () => setSelectedLeafs([]);
 
   const handleProbe = async () => {
-    if (!selected.length) {
-      alert("Välj minst en (sub)kategori först.");
-      return;
-    }
+    if (!selected.length) return alert("Välj minst en (sub)kategori först.");
     try {
       setProbeLoading(true);
       const res = await jsonFetch<ProbeResponse>(API.BRITPART_PROBE_CATS, {
@@ -438,7 +509,6 @@ export default function App() {
         const done = Math.max(0, totalSkus - remaining);
         setProgress({ done, total: totalSkus });
 
-        // om backend redan filtrerat bort allt → breaka
         if (!processed && !hasMore) break;
       }
 
@@ -458,7 +528,7 @@ Uppdaterade: se loggen
     }
   };
 
-  return (
+  const appUi = (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b border-gray-200">
         <div className="w-full px-6 py-3 flex items-center justify-between">
@@ -466,10 +536,18 @@ Uppdaterade: se loggen
             <span className="text-2xl">🛠️</span>
             <h1 className="text-lg sm:text-xl font-semibold tracking-tight">Landroverdelar</h1>
           </div>
+          <button
+            className="text-sm text-gray-600 hover:text-gray-900"
+            onClick={async () => {
+              await fetch("/api/auth-logout", { method: "POST", credentials: "include" });
+              location.reload();
+            }}
+          >
+            Logga ut
+          </button>
         </div>
       </header>
 
-      {/* HELBREDD */}
       <main className="w-full px-6 py-6 space-y-6">
         <nav className="flex flex-wrap gap-2">
           {TABS.map((t) => (
@@ -561,15 +639,12 @@ Uppdaterade: se loggen
               )}
             </div>
 
-            {/* Probe-resultat + leaf-val */}
             {probe && (
               <div className="mt-4 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center gap-3 mb-2">
                   <Badge>Unika SKU totalt (alla leafs): {probe.uniqueSkuCount}</Badge>
                   <Badge>Valda rötter: {probe.inputIds.join(", ")}</Badge>
-                  <Badge>
-                    Valda leafs: {selectedLeafs.length}/{allLeafCount}
-                  </Badge>
+                  <Badge>Valda leafs: {selectedLeafs.length}/{allLeafCount}</Badge>
                   <Button variant="ghost" onClick={selectAllLeafs} disabled={isImporting}>Välj alla</Button>
                   <Button variant="ghost" onClick={clearLeafs} disabled={isImporting}>Rensa</Button>
                 </div>
@@ -610,12 +685,9 @@ Uppdaterade: se loggen
                   </table>
                 </div>
 
-                {/* live-logg */}
                 {logLines.length > 0 && (
                   <div className="mt-3 p-3 bg-gray-50 rounded-lg border text-xs font-mono max-h-48 overflow-auto">
-                    {logLines.map((l, i) => (
-                      <div key={i}>{l}</div>
-                    ))}
+                    {logLines.map((l, i) => (<div key={i}>{l}</div>))}
                   </div>
                 )}
 
@@ -651,4 +723,7 @@ Uppdaterade: se loggen
       </main>
     </div>
   );
+
+  // Viktigt: hela appen skyddas bakom inloggning
+  return <LoginGate>{appUi}</LoginGate>;
 }

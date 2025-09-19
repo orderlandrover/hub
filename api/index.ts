@@ -1,4 +1,7 @@
+import "./shared/secure-all";        // <-- must be first to wrap app.http
+
 // api/index.ts
+
 import "./ping";
 import "./products-list";
 import "./products-update";
@@ -26,3 +29,4 @@ import "./britpart-probe-categories";
 
 // 🔻 Lägg till denna rad för din nya endpoint
 import "./sync-britpart-categories";
+
