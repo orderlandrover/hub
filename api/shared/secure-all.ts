@@ -1,7 +1,6 @@
 // api/shared/secure-all.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import jwt from "jsonwebtoken";
-import { env } from "./env";
+import { verifyToken, readCookie as readAuthCookie } from "./auth"; // <-- använd vår HMAC-token
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -10,55 +9,49 @@ const CORS = {
   "Access-Control-Allow-Credentials": "true",
 } as const;
 
-// Endpoints som ska vara öppna (ingen auth)
-const ALLOW = new Set<string>([
-  "auth-login",
-  "auth-logout",
-  "auth-me",
-  "ping",
-]);
+// öppna endpoints (ingen auth)
+const ALLOW = new Set<string>(["auth-login", "auth-logout", "auth-me", "ping"]);
 
 function unauthorized(): HttpResponseInit {
   return { status: 401, headers: CORS, jsonBody: { ok: false, error: "Not authenticated" } };
 }
 
-function readCookie(req: HttpRequest, name: string) {
-  const raw = req.headers.get("cookie") || "";
-  const m = raw.match(new RegExp(`${name}=([^;]+)`));
-  return m ? decodeURIComponent(m[1]) : null;
+function getToken(req: HttpRequest): string | undefined {
+  // 1) försök läsa vår cookie
+  const c = readAuthCookie(req);
+  if (c) return c;
+
+  // 2) stöd även Authorization: Bearer <token>
+  const auth = req.headers.get("authorization") || "";
+  const m = /^Bearer\s+(.+)$/i.exec(auth);
+  return m?.[1];
 }
 
-// Gör patchen bara en gång (vid hot-reload körs moduler om)
+// Gör patchen bara en gång
 const KEY = "__secure_all_patched__";
 if (!(globalThis as any)[KEY]) {
   (globalThis as any)[KEY] = true;
 
-  // Spara original
   const originalHttp = app.http.bind(app);
 
-  // Ersätt app.http med en variant som wrappar handlern
   (app as any).http = (name: string, options: any) => {
-    // Låt tillåtna endpoints registreras oförändrade
     if (ALLOW.has(name)) return originalHttp(name, options);
 
     const rawHandler = options?.handler;
     if (typeof rawHandler !== "function") return originalHttp(name, options);
 
     const wrapped = async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-      // Släpp alltid igenom preflight
-      if (req.method === "OPTIONS") return rawHandler(req, ctx);
+      // preflight
+      if (req.method === "OPTIONS") return { status: 204, headers: CORS };
 
-      // Kolla JWT i cookie
       try {
-        const token = readCookie(req, "hub_auth");
-        if (!token) return unauthorized();
-        jwt.verify(token, env.AUTH_SECRET);
+        const tok = getToken(req);
+        verifyToken(tok); // kastar vid ogiltig/utgången token
       } catch {
         return unauthorized();
       }
-      // Vid OK → kör originalhandler
+
       const res = await rawHandler(req, ctx);
-      // Se till att CORS finns i svar (behövs ofta i UI)
       if (res && typeof res === "object") {
         (res.headers as any) = { ...(res.headers || {}), ...CORS };
       }
