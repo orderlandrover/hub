@@ -67,39 +67,45 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   }
 
   if (state === "need-login") {
-    return (
-      <div className="min-h-screen grid place-items-center bg-gray-50">
-        <div className="bg-white border rounded-2xl p-6 shadow w-[360px]">
-          <h1 className="text-2xl font-bold mb-4">Logga in</h1>
-          <div className="space-y-3">
-            <input
-              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
-              placeholder="Användarnamn"
-              value={u}
-              onChange={(e) => setU(e.target.value)}
-              autoComplete="username"
-            />
-            <input
-              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
-              placeholder="Lösenord"
-              type="password"
-              value={p}
-              onChange={(e) => setP(e.target.value)}
-              autoComplete="current-password"
-            />
-            {err && <div className="text-sm text-red-600">Error: {err}</div>}
-            <button
-              onClick={doLogin}
-              disabled={busy || !u || !p}
-              className="w-full px-3 py-2 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
-            >
-              {busy ? "Loggar in…" : "Logga in"}
-            </button>
-          </div>
+  return (
+    <div className="min-h-screen grid place-items-center bg-gray-50">
+      <div className="bg-white border rounded-2xl p-6 shadow w-[360px]">
+        <div className="flex justify-center mb-4">
+          <img
+            src="https://landroverdelar.se/wp-content/uploads/2025/09/Landroverdelar-seSVART.jpg"
+            alt="Landroverdelar.se"
+            className="h-16"
+          />
+        </div>
+        <div className="space-y-3">
+          <input
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
+            placeholder="Användarnamn"
+            value={u}
+            onChange={(e) => setU(e.target.value)}
+            autoComplete="username"
+          />
+          <input
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
+            placeholder="Lösenord"
+            type="password"
+            value={p}
+            onChange={(e) => setP(e.target.value)}
+            autoComplete="current-password"
+          />
+          {err && <div className="text-sm text-red-600">Error: {err}</div>}
+          <button
+            onClick={doLogin}
+            disabled={busy || !u || !p}
+            className="w-full px-3 py-2 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
+          >
+            {busy ? "Loggar in…" : "Logga in"}
+          </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   return <>{children}</>;
 }
