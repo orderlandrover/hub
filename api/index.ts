@@ -6,6 +6,7 @@ import "./products-delete";
 import "./products-update-bulk";
 import "./products-delete-bulk";
 import "./wc-categories";
+import "./wc-products-bulk";
 
 import "./britpart-products";
 import "./britpart-categories";
