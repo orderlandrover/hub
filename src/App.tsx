@@ -48,7 +48,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         credentials: "include",
         body: JSON.stringify({ username: u, password: p }),
       });
-      if (!r.ok) throw new Error(await r.text().catch(() => "Login failed"));
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt || "Login failed");
       setState("ok");
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -59,35 +60,38 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
   if (state === "checking") {
     return (
-      <div className="min-h-screen grid place-items-center text-gray-600">
+      <div className="min-h-screen grid place-items-center text-gray-700">
         <div>Laddar…</div>
       </div>
     );
   }
+
   if (state === "need-login") {
     return (
       <div className="min-h-screen grid place-items-center bg-gray-50">
         <div className="bg-white border rounded-2xl p-6 shadow w-[360px]">
-          <h1 className="text-lg font-semibold mb-4">Logga in</h1>
+          <h1 className="text-2xl font-bold mb-4">Logga in</h1>
           <div className="space-y-3">
             <input
-              className="w-full border rounded-xl px-3 py-2 text-sm"
+              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
               placeholder="Användarnamn"
               value={u}
               onChange={(e) => setU(e.target.value)}
+              autoComplete="username"
             />
             <input
-              className="w-full border rounded-xl px-3 py-2 text-sm"
+              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
               placeholder="Lösenord"
               type="password"
               value={p}
               onChange={(e) => setP(e.target.value)}
+              autoComplete="current-password"
             />
-            {err && <div className="text-sm text-red-600">{err}</div>}
+            {err && <div className="text-sm text-red-600">Error: {err}</div>}
             <button
               onClick={doLogin}
-              disabled={busy}
-              className="w-full px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+              disabled={busy || !u || !p}
+              className="w-full px-3 py-2 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
             >
               {busy ? "Loggar in…" : "Logga in"}
             </button>
@@ -96,8 +100,10 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+
   return <>{children}</>;
 }
+
 
 /* --------------------------- Utils / API --------------------------- */
 const API = {
