@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 /* ----------------------------- Typer ----------------------------- */
 type WCProduct = {
@@ -13,7 +13,7 @@ type WCProduct = {
 };
 
 type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
-type WCCategory = { id: number; name: string; parent: number };
+type WCCategory    = { id: number; name: string; parent: number };
 
 /* ------------------------------ API ------------------------------ */
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -46,15 +46,12 @@ async function bulkUpdateCategories(opts: {
   });
 }
 
-/* ------------------------------ UI ------------------------------ */
+/* ------------------------------ UI helpers ------------------------------ */
 function Badge({ children }: { children: React.ReactNode }) {
   return <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{children}</span>;
 }
 function Button({
-  children,
-  onClick,
-  variant = "primary",
-  disabled,
+  children, onClick, variant = "primary", disabled,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
@@ -62,9 +59,9 @@ function Button({
   disabled?: boolean;
 }) {
   const styles: Record<string, string> = {
-    primary: "bg-indigo-600 text-white hover:bg-indigo-700",
+    primary: "bg-amber-500 text-white hover:bg-amber-600",
     outline: "border border-gray-300 text-gray-900 hover:bg-gray-50",
-    ghost: "text-gray-900 hover:bg-gray-100",
+    ghost:   "text-gray-900 hover:bg-gray-100",
   };
   return (
     <button
@@ -82,10 +79,95 @@ function Button({
   );
 }
 
-/* ----------------------------- Helpers ---------------------------- */
+/* ----------------------------- Utils ---------------------------- */
 const fmtPrice = (v?: number | null) => (v == null ? "—" : new Intl.NumberFormat("sv-SE").format(v));
 const humanStock = (s?: string | null) =>
   s === "instock" ? "i lager" : s === "outofstock" ? "slut" : s || "—";
+
+/* ---------- Woo-lik kategoribox: större, sökbar, bevarar scroll ---------- */
+function CategoryBox({
+  cats, stateSet, setState, title = "Produktkategorier",
+}: {
+  cats: WCCategory[];
+  stateSet: Set<number>;
+  setState: (s: Set<number>) => void;
+  title?: string;
+}) {
+  const [q, setQ] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef(0);
+
+  // bevara scrollposition mellan renders
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = scrollRef.current;
+  });
+
+  const byName = useMemo(() => {
+    const xs = [...cats];
+    xs.sort((a, b) => a.name.localeCompare(b.name, "sv"));
+    return xs;
+  }, [cats]);
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return byName;
+    return byName.filter(c => c.name.toLowerCase().includes(s) || String(c.id).includes(s));
+  }, [byName, q]);
+
+  const toggle = (id: number) => {
+    const next = new Set(stateSet);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setState(next);
+  };
+
+  return (
+    <div className="border rounded-2xl p-3 w-[520px] max-w-full bg-white">
+      <div className="sticky -top-3 bg-white pb-2">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-base font-semibold">{title}</div>
+          <div className="flex gap-2 text-xs">
+            <button className="underline text-gray-600" onClick={() => setState(new Set(cats.map(c => c.id)))} type="button">
+              Markera alla
+            </button>
+            <button className="underline text-gray-600" onClick={() => setState(new Set())} type="button">
+              Avmarkera
+            </button>
+          </div>
+        </div>
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Sök kategori…"
+          className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div
+        ref={listRef}
+        onScroll={e => { scrollRef.current = (e.target as HTMLDivElement).scrollTop; }}
+        className="mt-2 max-h-96 overflow-auto pr-2"
+      >
+        <div className="grid grid-cols-2 gap-x-4">
+          {filtered.map(c => (
+            <label key={c.id} className="flex items-center gap-2 py-1 cursor-pointer">
+              <input
+                type="checkbox"
+                className="accent-amber-600 scale-110"
+                checked={stateSet.has(c.id)}
+                onChange={() => toggle(c.id)}
+              />
+              <span className="text-sm leading-5 select-none">
+                <span className="font-medium">#{c.id}</span> — {c.name}
+                {c.parent ? ` (parent #${c.parent})` : ""}
+              </span>
+            </label>
+          ))}
+          {!filtered.length && <div className="text-sm text-gray-500 p-2 col-span-2">Inga kategorier.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* --------------------------- ProductsTab --------------------------- */
 export default function ProductsTab() {
@@ -107,12 +189,13 @@ export default function ProductsTab() {
   const [massAction, setMassAction] = useState<"redigera" | "trash">("redigera");
   const [showBulkEditor, setShowBulkEditor] = useState(false);
   const [bulkChecked, setBulkChecked] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
 
   // Per produkt
   const [editId, setEditId] = useState<number | null>(null);
   const [editChecked, setEditChecked] = useState<Set<number>>(new Set());
 
-  // laddning av data
+  /* -------- Data -------- */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -141,7 +224,7 @@ export default function ProductsTab() {
     })();
   }, []);
 
-  // urval helpers
+  /* -------- Urval -------- */
   const toggleOne = (id: number) =>
     setSelectedIds(xs => xs.includes(id) ? xs.filter(x => x !== id) : [...xs, id]);
 
@@ -151,88 +234,76 @@ export default function ProductsTab() {
       : Array.from(new Set([...selectedIds, ...allOnPage]))
     );
 
-  // renderar Woo-lik checkbox-lista
-  function CategoryBox({
-    stateSet, setState,
-  }: { stateSet: Set<number>; setState: (s: Set<number>) => void }) {
-    const toggle = (id: number) => {
-      const next = new Set(stateSet);
-      next.has(id) ? next.delete(id) : next.add(id);
-      setState(next);
-    };
-    return (
-      <div className="border rounded-xl p-2 w-[360px] max-w-full">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm font-medium">Produktkategorier</div>
-          <div className="flex gap-2 text-xs">
-            <button className="underline text-gray-600" type="button"
-              onClick={() => setState(new Set(cats.map(c => c.id)))}>Markera alla</button>
-            <button className="underline text-gray-600" type="button"
-              onClick={() => setState(new Set())}>Avmarkera</button>
-          </div>
-        </div>
-        <div className="max-h-64 overflow-auto space-y-1 pr-1">
-          {cats.map(c => (
-            <label key={c.id} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                className="accent-indigo-600"
-                checked={stateSet.has(c.id)}
-                onChange={() => toggle(c.id)}
-              />
-              <span className="text-sm">#{c.id} — {c.name}{c.parent ? ` (parent #${c.parent})` : ""}</span>
-            </label>
-          ))}
-          {!cats.length && <div className="text-sm text-gray-500 p-2">Inga kategorier.</div>}
-        </div>
-      </div>
-    );
-  }
-
-  // Woo-beteende: allt ibockat BLIR produktens kategorier (ersätt)
+  /* -------- Backend-uppdatering (exakt ersätt) -------- */
   async function applyExactCategories(productIds: number[], ids: number[]) {
-    if (!ids.length) throw new Error("Välj minst en kategori.");
-    const [first, ...rest] = ids;
+    const uniq = Array.from(new Set(ids));
+    if (!uniq.length) throw new Error("Välj minst en kategori.");
+
+    // set på första → ersätt allt, därefter add för resterande
+    const [first, ...rest] = uniq;
     await bulkUpdateCategories({ productIds, action: "set", categoryId: first });
     for (const cid of rest) {
       await bulkUpdateCategories({ productIds, action: "add", categoryId: cid });
     }
   }
 
+  /* -------- Optimistic UI helpers -------- */
+  function optimisticApply(productIds: number[], ids: number[]) {
+    const rows = ids.map(id => ({ id, name: catMap.get(id)?.name || `#${id}` }));
+    setData(prev => {
+      if (!prev) return prev;
+      const nextItems = prev.items.map(p =>
+        productIds.includes(p.id) ? { ...p, categories: rows } : p
+      );
+      return { ...prev, items: nextItems };
+    });
+  }
+
+  /* -------- Tillämpa (bulk och per-rad) -------- */
   async function bulkApply() {
-    if (massAction !== "redigera") return; // (vi har inte implementerat papperskorg)
+    if (massAction !== "redigera") return; // papperskorg ej implementerad här
     if (!selectedIds.length) return alert("Välj produkter i listan.");
     const ids = Array.from(bulkChecked);
     if (!ids.length) return alert("Välj minst en kategori.");
 
-    await applyExactCategories(selectedIds, ids);
-    alert(`Tillämpat på ${selectedIds.length} produkter.`);
-    setShowBulkEditor(false);
-    setBulkChecked(new Set());
-    const refreshed = await fetchProducts(page, perPage, search);
-    setData(refreshed);
-    setSelectedIds([]);
+    try {
+      setBusy(true);
+      optimisticApply(selectedIds, ids);
+      await applyExactCategories(selectedIds, ids);
+      setShowBulkEditor(false);
+      setBulkChecked(new Set());
+    } catch (e: any) {
+      alert(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function rowApply(productId: number) {
     const ids = Array.from(editChecked);
     if (!ids.length) return alert("Välj minst en kategori.");
-
-    await applyExactCategories([productId], ids);
-    setEditId(null);
-    const refreshed = await fetchProducts(page, perPage, search);
-    setData(refreshed);
+    try {
+      setBusy(true);
+      optimisticApply([productId], ids);
+      await applyExactCategories([productId], ids);
+      setEditId(null);
+    } catch (e: any) {
+      alert(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  // läsbar label
+  /* -------- Label -------- */
   const currentCatLabel = (rows?: { id: number; name?: string }[]) => {
     if (!rows || rows.length === 0) return "—";
     return rows.map(r => r.name || catMap.get(r.id)?.name || `#${r.id}`).join(", ");
   };
 
+  /* -------------------------------- Render -------------------------------- */
   return (
     <div className="space-y-4">
-      {/* Woo-huvudrad: Massåtgärder */}
+      {/* Huvudrad: Massåtgärder (Woo-stil) */}
       <div className="flex flex-wrap items-center gap-2">
         <select
           className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
@@ -244,9 +315,7 @@ export default function ProductsTab() {
         </select>
         <Button
           variant="outline"
-          onClick={() => {
-            if (massAction === "redigera") setShowBulkEditor(true);
-          }}
+          onClick={() => { if (massAction === "redigera") setShowBulkEditor(true); }}
           disabled={!selectedIds.length}
         >
           Tillämpa
@@ -270,17 +339,17 @@ export default function ProductsTab() {
         </div>
       </div>
 
-      {/* MASSREDIGERA-panel (Woo-stil) */}
+      {/* MASSREDIGERA-panel */}
       {showBulkEditor && (
-        <div className="border border-gray-200 rounded-xl p-3 bg-white">
+        <div className="border border-gray-200 rounded-2xl p-3 bg-white">
           <div className="text-sm font-semibold mb-2">Massredigera</div>
           <div className="flex flex-wrap items-start gap-3">
-            <CategoryBox stateSet={bulkChecked} setState={setBulkChecked} />
+            <CategoryBox cats={cats} stateSet={bulkChecked} setState={setBulkChecked} />
             <div className="flex flex-col gap-2 pt-1">
-              <Button onClick={bulkApply} disabled={!bulkChecked.size}>
-                Tillämpa
+              <Button onClick={bulkApply} disabled={!bulkChecked.size || busy}>
+                {busy ? "Tillämpa…" : "Tillämpa"}
               </Button>
-              <div className="text-xs text-gray-500">
+              <div className="text-xs text-gray-500 max-w-[260px]">
                 Allt som är ibockat blir produktens kategorier (ersätter tidigare).
               </div>
             </div>
@@ -296,7 +365,7 @@ export default function ProductsTab() {
               <th className="px-3 py-2">
                 <input
                   type="checkbox"
-                  className="accent-indigo-600"
+                  className="accent-amber-600"
                   checked={allChecked}
                   onChange={toggleAllOnPage}
                 />
@@ -319,7 +388,7 @@ export default function ProductsTab() {
                   <td className="px-3 py-2">
                     <input
                       type="checkbox"
-                      className="accent-indigo-600"
+                      className="accent-amber-600"
                       checked={selectedIds.includes(p.id)}
                       onChange={() => toggleOne(p.id)}
                     />
@@ -333,11 +402,11 @@ export default function ProductsTab() {
 
                   <td className="px-3 py-2">
                     {editing ? (
-                      <div className="flex items-start gap-2">
-                        <CategoryBox stateSet={editChecked} setState={setEditChecked} />
-                        <div className="flex flex-col gap-1 pt-1">
-                          <button className="px-3 py-2 rounded-xl border" onClick={() => rowApply(p.id)}>
-                            Tillämpa
+                      <div className="flex items-start gap-3">
+                        <CategoryBox cats={cats} stateSet={editChecked} setState={setEditChecked} title="Produktkategorier" />
+                        <div className="flex flex-col gap-2 pt-1">
+                          <button className="px-3 py-2 rounded-xl border" onClick={() => rowApply(p.id)} disabled={busy}>
+                            {busy ? "Tillämpa…" : "Tillämpa"}
                           </button>
                           <button className="px-3 py-2 rounded-xl" onClick={() => setEditId(null)}>
                             Stäng
