@@ -34,7 +34,7 @@ async function fetchCategories(perPage = 500) {
   return jsonFetch<ListResponse<WCCategory>>(url);
 }
 
-/** Din befintliga bulk-endpoint: tar EN categoryId åt gången */
+/** Din befintliga bulk-endpoint (en kategori per anrop) */
 async function bulkUpdateCategories(opts: {
   productIds: number[];
   action: "set" | "add" | "remove";
@@ -69,7 +69,8 @@ function Button({
       disabled={disabled}
       onClick={onClick}
       className={[
-        "px-3 py-2 rounded-xl text-sm font-medium transition",
+        // större knappar
+        "px-4 py-2.5 rounded-xl text-base font-medium transition",
         styles[variant],
         disabled ? "opacity-50 cursor-not-allowed" : "",
       ].join(" ")}
@@ -84,7 +85,7 @@ const fmtPrice = (v?: number | null) => (v == null ? "—" : new Intl.NumberForm
 const humanStock = (s?: string | null) =>
   s === "instock" ? "i lager" : s === "outofstock" ? "slut" : s || "—";
 
-/* ---------- Woo-lik kategoribox: större, sökbar, bevarar scroll ---------- */
+/* ---------- Woo-lik kategoribox: bred, sökbar, bevarar scroll ---------- */
 function CategoryBox({
   cats, stateSet, setState, title = "Produktkategorier",
 }: {
@@ -121,15 +122,15 @@ function CategoryBox({
   };
 
   return (
-    <div className="border rounded-2xl p-3 w-[520px] max-w-full bg-white">
-      <div className="sticky -top-3 bg-white pb-2">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-base font-semibold">{title}</div>
-          <div className="flex gap-2 text-xs">
-            <button className="underline text-gray-600" onClick={() => setState(new Set(cats.map(c => c.id)))} type="button">
+    <div className="border rounded-2xl p-4 w-full max-w-none bg-white">
+      <div className="sticky -top-4 bg-white pb-3">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-semibold">{title}</div>
+          <div className="flex gap-3 text-sm">
+            <button className="underline text-gray-700" onClick={() => setState(new Set(cats.map(c => c.id)))} type="button">
               Markera alla
             </button>
-            <button className="underline text-gray-600" onClick={() => setState(new Set())} type="button">
+            <button className="underline text-gray-700" onClick={() => setState(new Set())} type="button">
               Avmarkera
             </button>
           </div>
@@ -138,31 +139,32 @@ function CategoryBox({
           value={q}
           onChange={e => setQ(e.target.value)}
           placeholder="Sök kategori…"
-          className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+          className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base"
         />
       </div>
 
       <div
         ref={listRef}
         onScroll={e => { scrollRef.current = (e.target as HTMLDivElement).scrollTop; }}
-        className="mt-2 max-h-96 overflow-auto pr-2"
+        className="mt-3 max-h-[520px] overflow-auto pr-2"
       >
-        <div className="grid grid-cols-2 gap-x-4">
+        {/* 2 kolumner på mindre, 3 på xl */}
+        <div className="grid grid-cols-2 xl:grid-cols-3 gap-x-6">
           {filtered.map(c => (
-            <label key={c.id} className="flex items-center gap-2 py-1 cursor-pointer">
+            <label key={c.id} className="flex items-center gap-3 py-2 cursor-pointer">
               <input
                 type="checkbox"
-                className="accent-amber-600 scale-110"
+                className="accent-amber-600 scale-125"
                 checked={stateSet.has(c.id)}
                 onChange={() => toggle(c.id)}
               />
-              <span className="text-sm leading-5 select-none">
+              <span className="text-base leading-6 select-none">
                 <span className="font-medium">#{c.id}</span> — {c.name}
                 {c.parent ? ` (parent #${c.parent})` : ""}
               </span>
             </label>
           ))}
-          {!filtered.length && <div className="text-sm text-gray-500 p-2 col-span-2">Inga kategorier.</div>}
+          {!filtered.length && <div className="text-base text-gray-500 p-2 col-span-full">Inga kategorier.</div>}
         </div>
       </div>
     </div>
@@ -171,6 +173,7 @@ function CategoryBox({
 
 /* --------------------------- ProductsTab --------------------------- */
 export default function ProductsTab() {
+  // större grundtext överallt
   const [data, setData] = useState<ListResponse<WCProduct> | null>(null);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(100);
@@ -247,7 +250,7 @@ export default function ProductsTab() {
     }
   }
 
-  /* -------- Optimistic UI helpers -------- */
+  /* -------- Optimistic UI -------- */
   function optimisticApply(productIds: number[], ids: number[]) {
     const rows = ids.map(id => ({ id, name: catMap.get(id)?.name || `#${id}` }));
     setData(prev => {
@@ -302,11 +305,11 @@ export default function ProductsTab() {
 
   /* -------------------------------- Render -------------------------------- */
   return (
-    <div className="space-y-4">
-      {/* Huvudrad: Massåtgärder (Woo-stil) */}
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-5 text-[15px]">
+      {/* Huvudrad: Massåtgärder */}
+      <div className="flex flex-wrap items-center gap-3">
         <select
-          className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
+          className="border border-gray-300 rounded-xl px-4 py-2.5 text-base"
           value={massAction}
           onChange={(e) => setMassAction(e.target.value as any)}
         >
@@ -321,36 +324,44 @@ export default function ProductsTab() {
           Tillämpa
         </Button>
 
-        <div className="ml-auto flex items-center gap-2">
-          <label className="text-sm text-gray-600">Sök</label>
+        <div className="ml-auto flex items-center gap-3">
+          <label className="text-base text-gray-700">Sök</label>
           <input
             value={search}
             onChange={(e) => { setPage(1); setSearch(e.target.value); }}
             placeholder="SKU eller namn…"
-            className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
+            className="border border-gray-300 rounded-xl px-4 py-2.5 text-base min-w-[260px]"
           />
-          <label className="text-sm text-gray-600">Per sida</label>
+          <label className="text-base text-gray-700">Per sida</label>
           <input
             type="number"
-            className="w-20 border border-gray-300 rounded-xl px-3 py-2 text-sm"
+            className="w-24 border border-gray-300 rounded-xl px-4 py-2.5 text-base"
             value={perPage}
             onChange={(e) => { setPage(1); setPerPage(Math.max(10, Number(e.target.value) || 100)); }}
           />
         </div>
       </div>
 
-      {/* MASSREDIGERA-panel */}
+      {/* MASSREDIGERA-panel – full bredd i grid */}
       {showBulkEditor && (
-        <div className="border border-gray-200 rounded-2xl p-3 bg-white">
-          <div className="text-sm font-semibold mb-2">Massredigera</div>
-          <div className="flex flex-wrap items-start gap-3">
-            <CategoryBox cats={cats} stateSet={bulkChecked} setState={setBulkChecked} />
-            <div className="flex flex-col gap-2 pt-1">
-              <Button onClick={bulkApply} disabled={!bulkChecked.size || busy}>
-                {busy ? "Tillämpa…" : "Tillämpa"}
-              </Button>
-              <div className="text-xs text-gray-500 max-w-[260px]">
-                Allt som är ibockat blir produktens kategorier (ersätter tidigare).
+        <div className="border border-gray-200 rounded-2xl p-4 bg-white">
+          <div className="text-base font-semibold mb-3">Massredigera</div>
+          <div className="grid grid-cols-12 gap-6">
+            <div className="col-span-12 xl:col-span-8">
+              <CategoryBox cats={cats} stateSet={bulkChecked} setState={setBulkChecked} />
+            </div>
+            <div className="col-span-12 xl:col-span-4">
+              <div className="border rounded-2xl p-4 h-full bg-gray-50 flex flex-col gap-3">
+                <div className="text-lg font-semibold">Tillämpa</div>
+                <div className="text-sm text-gray-600">
+                  Allt som är ibockat blir produktens kategorier (ersätter tidigare).
+                </div>
+                <Button onClick={bulkApply} disabled={!bulkChecked.size || busy}>
+                  {busy ? "Tillämpa…" : "Tillämpa"}
+                </Button>
+                <div className="text-sm text-gray-500">
+                  Valda produkter: {selectedIds.length || 0}
+                </div>
               </div>
             </div>
           </div>
@@ -359,25 +370,25 @@ export default function ProductsTab() {
 
       {/* Tabell */}
       <div className="border border-gray-200 rounded-xl overflow-hidden">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-base">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-3 py-2">
+              <th className="px-4 py-3">
                 <input
                   type="checkbox"
-                  className="accent-amber-600"
+                  className="accent-amber-600 scale-110"
                   checked={allChecked}
                   onChange={toggleAllOnPage}
                 />
               </th>
-              <th className="text-left px-3 py-2">Produkt</th>
-              <th className="text-left px-3 py-2">SKU</th>
-              <th className="text-left px-3 py-2">Pris</th>
-              <th className="text-left px-3 py-2">Lager</th>
-              <th className="text-left px-3 py-2">Status</th>
-              <th className="text-left px-3 py-2">Kategorier</th>
-              <th className="text-left px-3 py-2">Åtgärder</th>
-              <th className="text-left px-3 py-2">ID</th>
+              <th className="text-left px-4 py-3">Produkt</th>
+              <th className="text-left px-4 py-3">SKU</th>
+              <th className="text-left px-4 py-3">Pris</th>
+              <th className="text-left px-4 py-3">Lager</th>
+              <th className="text-left px-4 py-3">Status</th>
+              <th className="text-left px-4 py-3">Kategorier</th>
+              <th className="text-left px-4 py-3">Åtgärder</th>
+              <th className="text-left px-4 py-3">ID</th>
             </tr>
           </thead>
           <tbody>
@@ -385,37 +396,37 @@ export default function ProductsTab() {
               const editing = editId === p.id;
               return (
                 <tr key={p.id} className="odd:bg-white even:bg-gray-50 align-top">
-                  <td className="px-3 py-2">
+                  <td className="px-4 py-3">
                     <input
                       type="checkbox"
-                      className="accent-amber-600"
+                      className="accent-amber-600 scale-110"
                       checked={selectedIds.includes(p.id)}
                       onChange={() => toggleOne(p.id)}
                     />
                   </td>
-                  <td className="px-3 py-2">{p.name}</td>
-                  <td className="px-3 py-2 font-mono">{p.sku || "—"}</td>
-                  <td className="px-3 py-2 text-right">{fmtPrice(p.price)}</td>
-                  <td className="px-3 py-2">{humanStock(p.stock_status)}</td>
-                  <td className="px-3 py-2">{p.status || "—"}</td>
-                  <td className="px-3 py-2">{currentCatLabel(p.categories)}</td>
+                  <td className="px-4 py-3">{p.name}</td>
+                  <td className="px-4 py-3 font-mono">{p.sku || "—"}</td>
+                  <td className="px-4 py-3 text-right">{fmtPrice(p.price)}</td>
+                  <td className="px-4 py-3">{humanStock(p.stock_status)}</td>
+                  <td className="px-4 py-3">{p.status || "—"}</td>
+                  <td className="px-4 py-3">{currentCatLabel(p.categories)}</td>
 
-                  <td className="px-3 py-2">
+                  <td className="px-4 py-3">
                     {editing ? (
-                      <div className="flex items-start gap-3">
+                      <div className="flex flex-col gap-3">
                         <CategoryBox cats={cats} stateSet={editChecked} setState={setEditChecked} title="Produktkategorier" />
-                        <div className="flex flex-col gap-2 pt-1">
-                          <button className="px-3 py-2 rounded-xl border" onClick={() => rowApply(p.id)} disabled={busy}>
+                        <div className="flex gap-3">
+                          <button className="px-4 py-2.5 rounded-xl border" onClick={() => rowApply(p.id)} disabled={busy}>
                             {busy ? "Tillämpa…" : "Tillämpa"}
                           </button>
-                          <button className="px-3 py-2 rounded-xl" onClick={() => setEditId(null)}>
+                          <button className="px-4 py-2.5 rounded-xl" onClick={() => setEditId(null)}>
                             Stäng
                           </button>
                         </div>
                       </div>
                     ) : (
                       <button
-                        className="px-3 py-2 rounded-xl border"
+                        className="px-4 py-2.5 rounded-xl border"
                         onClick={() => {
                           setEditId(p.id);
                           setEditChecked(new Set((p.categories || []).map(c => c.id)));
@@ -426,13 +437,13 @@ export default function ProductsTab() {
                     )}
                   </td>
 
-                  <td className="px-3 py-2 font-mono">{p.id}</td>
+                  <td className="px-4 py-3 font-mono">{p.id}</td>
                 </tr>
               );
             })}
             {!loading && (data?.items || []).length === 0 && (
               <tr>
-                <td className="px-3 py-6 text-center text-gray-500" colSpan={9}>
+                <td className="px-4 py-8 text-center text-gray-500" colSpan={9}>
                   Inga produkter funna.
                 </td>
               </tr>
@@ -443,7 +454,7 @@ export default function ProductsTab() {
 
       {/* Paginering */}
       {!!data && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1 || loading}>
             Föregående
           </Button>
@@ -455,7 +466,7 @@ export default function ProductsTab() {
           >
             Nästa
           </Button>
-          <span className="ml-2 text-xs text-gray-500">Totalt: {data.total}</span>
+          <span className="ml-2 text-sm text-gray-600">Totalt: {data.total}</span>
         </div>
       )}
     </div>
