@@ -1,6 +1,4 @@
 import React, { useEffect, useMemo, useState } from "react";
-import CategoryPicker from "../../components/CategoryPicker";
-import type { WCCategory as PickerWCCategory } from "../../components/CategoryPicker";
 
 /* ----------------------------- Typer ----------------------------- */
 type WCProduct = {
@@ -15,8 +13,6 @@ type WCProduct = {
 };
 
 type ListResponse<T> = { items: T[]; total: number; pages: number; page: number };
-
-// Håller din gamla typ (kompatibel med pickerns)
 type WCCategory = { id: number; name: string; parent: number };
 
 /* ------------------------------ API ------------------------------ */
@@ -33,11 +29,12 @@ async function fetchProducts(page: number, perPage: number, search = "") {
   return jsonFetch<ListResponse<WCProduct>>(url);
 }
 
-async function fetchCategories(perPage = 200) {
+async function fetchCategories(perPage = 500) {
   const url = `/api/wc-categories?page=1&per_page=${perPage}`;
   return jsonFetch<ListResponse<WCCategory>>(url);
 }
 
+/** Din befintliga bulk-endpoint: tar EN categoryId åt gången */
 async function bulkUpdateCategories(opts: {
   productIds: number[];
   action: "set" | "add" | "remove";
@@ -53,7 +50,6 @@ async function bulkUpdateCategories(opts: {
 function Badge({ children }: { children: React.ReactNode }) {
   return <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{children}</span>;
 }
-
 function Button({
   children,
   onClick,
@@ -100,29 +96,23 @@ export default function ProductsTab() {
   const [loading, setLoading] = useState(false);
 
   const [cats, setCats] = useState<WCCategory[]>([]);
+  const catMap = useMemo(() => new Map(cats.map(c => [c.id, c])), [cats]);
 
-  // urval
+  // urval i tabellen
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const allOnPage = useMemo(() => (data?.items || []).map((p) => p.id), [data]);
   const allChecked = allOnPage.length > 0 && allOnPage.every((id) => selectedIds.includes(id));
 
-  // bulk-kontroller
-  const [action, setAction] = useState<"set" | "add" | "remove">("set");
-  const [bulkCatIds, setBulkCatIds] = useState<number[]>([]);
-  const [running, setRunning] = useState(false);
+  // Massåtgärder (Woo-stil)
+  const [massAction, setMassAction] = useState<"redigera" | "trash">("redigera");
+  const [showBulkEditor, setShowBulkEditor] = useState(false);
+  const [bulkChecked, setBulkChecked] = useState<Set<number>>(new Set());
 
-  // per-produkt editor
+  // Per produkt
   const [editId, setEditId] = useState<number | null>(null);
-  const [editCatIds, setEditCatIds] = useState<number[]>([]);
+  const [editChecked, setEditChecked] = useState<Set<number>>(new Set());
 
-  // kategori lookup
-  const catMap = useMemo(() => {
-    const m = new Map<number, WCCategory>();
-    for (const c of cats) m.set(c.id, c);
-    return m;
-  }, [cats]);
-
-  // hämta produkter
+  // laddning av data
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -131,147 +121,142 @@ export default function ProductsTab() {
         const res = await fetchProducts(page, perPage, search);
         if (!alive) return;
         setData(res);
-        setSelectedIds([]); // töm urval vid sidbyte/sök
-      } catch (e) {
-        console.error(e);
+        setSelectedIds([]);  // rensa urval vid sidbyte/sök
+      } catch {
         if (!alive) return;
         setData({ items: [], total: 0, pages: 1, page: 1 });
       } finally {
         if (alive) setLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [page, perPage, search]);
 
-  // hämta kategorier (en gång)
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetchCategories(200);
+        const res = await fetchCategories(500);
         setCats(Array.isArray(res?.items) ? res.items : []);
-      } catch (e) {
-        console.error(e);
-        setCats([]);
-      }
+      } catch { setCats([]); }
     })();
   }, []);
 
+  // urval helpers
   const toggleOne = (id: number) =>
-    setSelectedIds((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]));
+    setSelectedIds(xs => xs.includes(id) ? xs.filter(x => x !== id) : [...xs, id]);
 
   const toggleAllOnPage = () =>
-    setSelectedIds(
-      allChecked ? selectedIds.filter((id) => !allOnPage.includes(id)) : Array.from(new Set([...selectedIds, ...allOnPage]))
+    setSelectedIds(allChecked
+      ? selectedIds.filter(id => !allOnPage.includes(id))
+      : Array.from(new Set([...selectedIds, ...allOnPage]))
     );
 
-  // visa kategori-namn snyggt
+  // renderar Woo-lik checkbox-lista
+  function CategoryBox({
+    stateSet, setState,
+  }: { stateSet: Set<number>; setState: (s: Set<number>) => void }) {
+    const toggle = (id: number) => {
+      const next = new Set(stateSet);
+      next.has(id) ? next.delete(id) : next.add(id);
+      setState(next);
+    };
+    return (
+      <div className="border rounded-xl p-2 w-[360px] max-w-full">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-medium">Produktkategorier</div>
+          <div className="flex gap-2 text-xs">
+            <button className="underline text-gray-600" type="button"
+              onClick={() => setState(new Set(cats.map(c => c.id)))}>Markera alla</button>
+            <button className="underline text-gray-600" type="button"
+              onClick={() => setState(new Set())}>Avmarkera</button>
+          </div>
+        </div>
+        <div className="max-h-64 overflow-auto space-y-1 pr-1">
+          {cats.map(c => (
+            <label key={c.id} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="accent-indigo-600"
+                checked={stateSet.has(c.id)}
+                onChange={() => toggle(c.id)}
+              />
+              <span className="text-sm">#{c.id} — {c.name}{c.parent ? ` (parent #${c.parent})` : ""}</span>
+            </label>
+          ))}
+          {!cats.length && <div className="text-sm text-gray-500 p-2">Inga kategorier.</div>}
+        </div>
+      </div>
+    );
+  }
+
+  // Woo-beteende: allt ibockat BLIR produktens kategorier (ersätt)
+  async function applyExactCategories(productIds: number[], ids: number[]) {
+    if (!ids.length) throw new Error("Välj minst en kategori.");
+    const [first, ...rest] = ids;
+    await bulkUpdateCategories({ productIds, action: "set", categoryId: first });
+    for (const cid of rest) {
+      await bulkUpdateCategories({ productIds, action: "add", categoryId: cid });
+    }
+  }
+
+  async function bulkApply() {
+    if (massAction !== "redigera") return; // (vi har inte implementerat papperskorg)
+    if (!selectedIds.length) return alert("Välj produkter i listan.");
+    const ids = Array.from(bulkChecked);
+    if (!ids.length) return alert("Välj minst en kategori.");
+
+    await applyExactCategories(selectedIds, ids);
+    alert(`Tillämpat på ${selectedIds.length} produkter.`);
+    setShowBulkEditor(false);
+    setBulkChecked(new Set());
+    const refreshed = await fetchProducts(page, perPage, search);
+    setData(refreshed);
+    setSelectedIds([]);
+  }
+
+  async function rowApply(productId: number) {
+    const ids = Array.from(editChecked);
+    if (!ids.length) return alert("Välj minst en kategori.");
+
+    await applyExactCategories([productId], ids);
+    setEditId(null);
+    const refreshed = await fetchProducts(page, perPage, search);
+    setData(refreshed);
+  }
+
+  // läsbar label
   const currentCatLabel = (rows?: { id: number; name?: string }[]) => {
     if (!rows || rows.length === 0) return "—";
-    const parts = rows.map((r) => {
-      if (r.name) return r.name;
-      const c = catMap.get(r.id);
-      return c?.name ? c.name : `#${r.id}`;
-    });
-    return parts.join(", ");
+    return rows.map(r => r.name || catMap.get(r.id)?.name || `#${r.id}`).join(", ");
   };
-
-  // hjälp: loopa flera kategori-IDs mot din befintliga bulk-endpoint (en kategori per anrop)
-  async function bulkUpdateMany(productIds: number[], categoryIds: number[], act: "set"|"add"|"remove") {
-    let updated = 0, failed: number[] = [], skipped: number[] = [];
-    for (const cid of categoryIds) {
-      try {
-        const res = await bulkUpdateCategories({ productIds, action: act, categoryId: cid });
-        updated += Number(res?.updated || 0);
-        if (Array.isArray(res?.failedIds)) failed.push(...res.failedIds);
-        if (Array.isArray(res?.skipped)) skipped.push(...res.skipped);
-      } catch {
-        failed.push(...productIds);
-      }
-    }
-    return { updated, failed, skipped };
-  }
-
-  const doBulkUpdate = async () => {
-    if (!selectedIds.length) return alert("Välj minst en produkt.");
-    if (!bulkCatIds.length) return alert("Välj minst en Woo-kategori.");
-    try {
-      setRunning(true);
-      const { updated, failed, skipped } = await bulkUpdateMany(selectedIds, bulkCatIds, action);
-      alert(`Klart.\nUppdaterade: ${updated}\nHoppade över: ${skipped.length}\nMisslyckade: ${failed.length}`);
-
-      // ladda om sidan vi står på för att se nya kategorier
-      const refreshed = await fetchProducts(page, perPage, search);
-      setData(refreshed);
-      setSelectedIds([]);
-      setBulkCatIds([]);
-    } catch (e: any) {
-      console.error(e);
-      alert(e?.message || String(e));
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  async function saveRow(id: number, catsToApply: number[], act: "set"|"add"|"remove") {
-    try {
-      setRunning(true);
-      await bulkUpdateMany([id], catsToApply, act);
-      setEditId(null);
-      const refreshed = await fetchProducts(page, perPage, search);
-      setData(refreshed);
-    } catch (e: any) {
-      alert(e?.message || String(e));
-    } finally {
-      setRunning(false);
-    }
-  }
 
   return (
     <div className="space-y-4">
-      {/* Bulk-panel */}
-      <div className="flex flex-wrap items-start gap-3">
-        <div>
-          <label className="block text-sm font-medium mb-1">Åtgärd</label>
-          <select
-            className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
-            value={action}
-            onChange={(e) => setAction(e.target.value as any)}
-            disabled={running}
-          >
-            <option value="set">Byt till (ersätt)</option>
-            <option value="add">Lägg till</option>
-            <option value="remove">Ta bort</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1">Woo-kategorier (flera)</label>
-          <CategoryPicker
-            allCategories={cats as unknown as PickerWCCategory[]}
-            value={bulkCatIds}
-            onChange={setBulkCatIds}
-          />
-        </div>
-
-        <div className="flex flex-col gap-2 pt-6">
-          <Button onClick={doBulkUpdate} disabled={running || !selectedIds.length || !bulkCatIds.length}>
-            {running ? "Uppdaterar…" : `Uppdatera ${selectedIds.length} valda`}
-          </Button>
-          <div className="text-xs text-gray-500">
-            Valda produkter: {selectedIds.length || 0}
-          </div>
-        </div>
+      {/* Woo-huvudrad: Massåtgärder */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
+          value={massAction}
+          onChange={(e) => setMassAction(e.target.value as any)}
+        >
+          <option value="redigera">Redigera</option>
+          <option value="trash">Lägg i papperskorgen</option>
+        </select>
+        <Button
+          variant="outline"
+          onClick={() => {
+            if (massAction === "redigera") setShowBulkEditor(true);
+          }}
+          disabled={!selectedIds.length}
+        >
+          Tillämpa
+        </Button>
 
         <div className="ml-auto flex items-center gap-2">
           <label className="text-sm text-gray-600">Sök</label>
           <input
             value={search}
-            onChange={(e) => {
-              setPage(1);
-              setSearch(e.target.value);
-            }}
+            onChange={(e) => { setPage(1); setSearch(e.target.value); }}
             placeholder="SKU eller namn…"
             className="border border-gray-300 rounded-xl px-3 py-2 text-sm"
           />
@@ -280,13 +265,28 @@ export default function ProductsTab() {
             type="number"
             className="w-20 border border-gray-300 rounded-xl px-3 py-2 text-sm"
             value={perPage}
-            onChange={(e) => {
-              setPage(1);
-              setPerPage(Math.max(10, Number(e.target.value) || 100));
-            }}
+            onChange={(e) => { setPage(1); setPerPage(Math.max(10, Number(e.target.value) || 100)); }}
           />
         </div>
       </div>
+
+      {/* MASSREDIGERA-panel (Woo-stil) */}
+      {showBulkEditor && (
+        <div className="border border-gray-200 rounded-xl p-3 bg-white">
+          <div className="text-sm font-semibold mb-2">Massredigera</div>
+          <div className="flex flex-wrap items-start gap-3">
+            <CategoryBox stateSet={bulkChecked} setState={setBulkChecked} />
+            <div className="flex flex-col gap-2 pt-1">
+              <Button onClick={bulkApply} disabled={!bulkChecked.size}>
+                Tillämpa
+              </Button>
+              <div className="text-xs text-gray-500">
+                Allt som är ibockat blir produktens kategorier (ersätter tidigare).
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabell */}
       <div className="border border-gray-200 rounded-xl overflow-hidden">
@@ -306,8 +306,8 @@ export default function ProductsTab() {
               <th className="text-left px-3 py-2">Pris</th>
               <th className="text-left px-3 py-2">Lager</th>
               <th className="text-left px-3 py-2">Status</th>
-              <th className="text-left px-3 py-2">Kategori</th>
-              <th className="text-left px-3 py-2">Redigera</th>
+              <th className="text-left px-3 py-2">Kategorier</th>
+              <th className="text-left px-3 py-2">Åtgärder</th>
               <th className="text-left px-3 py-2">ID</th>
             </tr>
           </thead>
@@ -334,37 +334,12 @@ export default function ProductsTab() {
                   <td className="px-3 py-2">
                     {editing ? (
                       <div className="flex items-start gap-2">
-                        <CategoryPicker
-                          allCategories={cats as unknown as PickerWCCategory[]}
-                          value={editCatIds}
-                          onChange={setEditCatIds}
-                        />
-                        <div className="flex flex-col gap-1">
-                          <button
-                            className="px-3 py-2 rounded-xl border"
-                            onClick={() => saveRow(p.id, editCatIds, "set")}
-                            disabled={running}
-                          >
-                            Spara (ersätt)
+                        <CategoryBox stateSet={editChecked} setState={setEditChecked} />
+                        <div className="flex flex-col gap-1 pt-1">
+                          <button className="px-3 py-2 rounded-xl border" onClick={() => rowApply(p.id)}>
+                            Tillämpa
                           </button>
-                          <button
-                            className="px-3 py-2 rounded-xl border"
-                            onClick={() => saveRow(p.id, editCatIds, "add")}
-                            disabled={running}
-                          >
-                            Lägg till
-                          </button>
-                          <button
-                            className="px-3 py-2 rounded-xl border"
-                            onClick={() => saveRow(p.id, editCatIds, "remove")}
-                            disabled={running}
-                          >
-                            Ta bort
-                          </button>
-                          <button
-                            className="px-3 py-2 rounded-xl"
-                            onClick={() => setEditId(null)}
-                          >
+                          <button className="px-3 py-2 rounded-xl" onClick={() => setEditId(null)}>
                             Stäng
                           </button>
                         </div>
@@ -374,7 +349,7 @@ export default function ProductsTab() {
                         className="px-3 py-2 rounded-xl border"
                         onClick={() => {
                           setEditId(p.id);
-                          setEditCatIds((p.categories || []).map((c) => c.id));
+                          setEditChecked(new Set((p.categories || []).map(c => c.id)));
                         }}
                       >
                         Redigera kategorier
@@ -403,9 +378,7 @@ export default function ProductsTab() {
           <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1 || loading}>
             Föregående
           </Button>
-          <Badge>
-            Sida {data.page} / {data.pages}
-          </Badge>
+          <Badge>Sida {data.page} / {data.pages}</Badge>
           <Button
             variant="outline"
             onClick={() => setPage((p) => Math.min(data.pages || 1, p + 1))}
