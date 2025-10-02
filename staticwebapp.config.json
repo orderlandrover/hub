@@ -1,32 +1,69 @@
 {
   "$schema": "https://staticwebapp.net/schema/latest/staticwebapp.config.schema.json",
   "routes": [
-    { "route": "/api/*", "allowedRoles": ["anonymous"] },
-
-    { "route": "/products-list",   "rewrite": "/api/products-list" },
-    { "route": "/products-list/*", "rewrite": "/api/products-list/*" },
-
-    { "route": "/wc-categories",   "rewrite": "/api/wc-categories" },
-    { "route": "/wc-categories/*", "rewrite": "/api/wc-categories/*" },
-
-    { "route": "/publish",         "rewrite": "/api/publish" },
-    { "route": "/publish/*",       "rewrite": "/api/publish/*" },
-
-    { "route": "/unpublish",       "rewrite": "/api/unpublish" },
-    { "route": "/unpublish/*",     "rewrite": "/api/unpublish/*" },
-
-    { "route": "/update-price",    "rewrite": "/api/update-price" },
-    { "route": "/update-price/*",  "rewrite": "/api/update-price/*" },
-
-    { "route": "/set-category",    "rewrite": "/api/set-category" },
-    { "route": "/set-category/*",  "rewrite": "/api/set-category/*" }
+    {
+      "route": "/products-list",
+      "rewrite": "/api/products-list"
+    },
+    {
+      "route": "/products-list/*",
+      "rewrite": "/api/products-list/*"
+    },
+    {
+      "route": "/wc-categories",
+      "rewrite": "/api/wc-categories"
+    },
+    {
+      "route": "/wc-categories/*",
+      "rewrite": "/api/wc-categories/*"
+    },
+    {
+      "route": "/publish",
+      "rewrite": "/api/publish"
+    },
+    {
+      "route": "/publish/*",
+      "rewrite": "/api/publish/*"
+    },
+    {
+      "route": "/unpublish",
+      "rewrite": "/api/unpublish"
+    },
+    {
+      "route": "/unpublish/*",
+      "rewrite": "/api/unpublish/*"
+    },
+    {
+      "route": "/update-price",
+      "rewrite": "/api/update-price"
+    },
+    {
+      "route": "/update-price/*",
+      "rewrite": "/api/update-price/*"
+    },
+    {
+      "route": "/set-category",
+      "rewrite": "/api/set-category"
+    },
+    {
+      "route": "/set-category/*",
+      "rewrite": "/api/set-category/*"
+    }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/api/*", "/assets/*", "/images/*", "/fonts/*"]
+    "exclude": [
+      "/api/*",
+      "/assets/*",
+      "/images/*",
+      "/fonts/*"
+    ]
   },
   "responseOverrides": {
-    "404": { "rewrite": "/index.html", "statusCode": 200 }
+    "404": {
+      "rewrite": "/index.html",
+      "statusCode": 200
+    }
   },
   "globalHeaders": {
     "Access-Control-Allow-Origin": "*",
@@ -37,5 +74,7 @@
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
   },
-  "mimeTypes": { ".wasm": "application/wasm" }
+  "mimeTypes": {
+    ".wasm": "application/wasm"
+  }
 }
