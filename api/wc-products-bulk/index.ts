@@ -14,17 +14,21 @@ const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
 type BulkBody = {
   productIds: number[];
-  /** 'set' = ersätt helt, 'add' = lägg till, 'remove' = ta bort */
+  /** 'set' = ersätter helt, 'add' = lägger till, 'remove' = tar bort */
   action: "set" | "add" | "remove";
-  categoryId: number;
+  /** en eller flera kategorier */
+  categoryIds: number[];
   /** Torrkörning: bygg plan men uppdatera inte i Woo */
   dryRun?: boolean;
 };
 
-type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }>; };
+type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
+
+/* --------------------------------------------------------------- */
+/* Helpers                                                         */
+/* --------------------------------------------------------------- */
 
 async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise<Map<number, WCProductLite>> {
-  // Hämta i parallell men lagom throttle. Använder _fields för min payload.
   const map = new Map<number, WCProductLite>();
   let i = 0;
   const conc = 10;
@@ -44,36 +48,49 @@ async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise
   return map;
 }
 
+function uniqSorted(nums: number[]): number[] {
+  const s = new Set<number>();
+  for (const n of nums) {
+    const v = Number(n);
+    if (Number.isFinite(v) && v > 0) s.add(v);
+  }
+  return Array.from(s).sort((a, b) => a - b);
+}
+
 function nextCategories(
   current: Array<{ id: number }> | undefined,
   action: "set" | "add" | "remove",
-  catId: number
+  catIds: number[]
 ): Array<{ id: number }> {
-  const cur = Array.isArray(current) ? current.map(c => ({ id: Number(c.id) })) : [];
-  if (action === "set") return [{ id: catId }];
+  const cur = Array.isArray(current) ? current.map(c => Number(c.id)) : [];
+  const cats = uniqSorted(catIds);
 
-  const set = new Set(cur.map(c => c.id));
-  if (action === "add") {
-    set.add(catId);
-    return Array.from(set).map(id => ({ id }));
+  if (action === "set") {
+    return cats.map(id => ({ id }));
   }
+
+  const set = new Set(cur);
+  if (action === "add") {
+    for (const id of cats) set.add(id);
+    return uniqSorted(Array.from(set)).map(id => ({ id }));
+  }
+
   // remove
-  set.delete(catId);
-  return Array.from(set).map(id => ({ id }));
+  for (const id of cats) set.delete(id);
+  return uniqSorted(Array.from(set)).map(id => ({ id }));
 }
 
 async function postBatchUpdates(updates: Array<{ id: number; categories: Array<{ id: number }> }>, ctx: InvocationContext) {
   let updated = 0;
   const failed: number[] = [];
 
-  for (let i = 0; i < updates.length; i += 80) {
-    const chunk = updates.slice(i, i + 80);
+  for (let i = 0; i < updates.length; i += 100) {
+    const chunk = updates.slice(i, i + 100);
     try {
       const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, { update: chunk });
       updated += Array.isArray(res.update) ? res.update.length : 0;
     } catch (e) {
       ctx.warn?.(`batch update fail (${chunk.length}): ${emsg(e)} → fallback per item`);
-      // Fallback per produkt
       for (const u of chunk) {
         try {
           await wcPostJSON(`/products/batch`, { update: [u] });
@@ -106,18 +123,20 @@ app.http("wc-products-bulk", {
       const productIds = Array.isArray(body?.productIds)
         ? body.productIds.map(Number).filter(n => Number.isFinite(n) && n > 0)
         : [];
-      const action = body?.action;
-      const categoryId = Number(body?.categoryId || 0);
+      const action = String(body?.action) as BulkBody["action"];
+      const categoryIds = Array.isArray(body?.categoryIds)
+        ? body.categoryIds.map(Number).filter(n => Number.isFinite(n) && n > 0)
+        : [];
       const dryRun = !!body?.dryRun;
 
       if (!productIds.length) {
         return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "productIds saknas" } };
       }
-      if (!["set", "add", "remove"].includes(String(action))) {
+      if (!["set", "add", "remove"].includes(action)) {
         return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "ogiltig action" } };
       }
-      if (!Number.isFinite(categoryId) || categoryId <= 0) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "categoryId saknas/ogiltig" } };
+      if (!categoryIds.length) {
+        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "categoryIds saknas/ogiltiga" } };
       }
 
       where = "fetch-products";
@@ -129,10 +148,10 @@ app.http("wc-products-bulk", {
         .map(id => {
           const p = prodMap.get(id);
           if (!p) return null;
-          const before = Array.isArray(p.categories) ? p.categories.map(c => c.id) : [];
-          const after = nextCategories(p.categories, action as any, categoryId).map(c => c.id);
+          const before = Array.isArray(p.categories) ? p.categories.map(c => Number(c.id)) : [];
+          const after = nextCategories(p.categories, action, categoryIds).map(c => c.id);
           const same = before.join(",") === after.join(",");
-          return { id, before, after, same };
+          return { id, before: uniqSorted(before), after: uniqSorted(after), same };
         })
         .filter(Boolean) as Array<{ id: number; before: number[]; after: number[]; same: boolean }>;
 

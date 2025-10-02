@@ -3,7 +3,7 @@ import { env } from "./env";
 
 /**
  * ENV som används:
- *  - WP_URL     (ex: https://landroverdelar.se) – ingen slash på slutet
+ *  - WP_URL     (https://landroverdelar.se) – ingen trailing slash
  *  - WC_KEY     (Woo consumer key)
  *  - WC_SECRET  (Woo consumer secret)
  */
@@ -18,7 +18,6 @@ const WC_SECRET = env.WC_SECRET || "";
 
 export type WooStatus = "publish" | "draft" | "private" | "pending";
 
-/** Woo bildobjekt enligt REST API */
 export type WooImage = {
   id?: number;
   src?: string;
@@ -27,7 +26,6 @@ export type WooImage = {
   position?: number;
 };
 
-/** Key/Value-meta som lagras på produkten */
 export type WooMeta = { key: string; value: any };
 
 export type WooUpdate = {
@@ -47,7 +45,7 @@ export type WooUpdate = {
   images?: WooImage[];
   meta_data?: WooMeta[];
 
-  // 🔸 NYTT: möjliggör uppdatering av kategorier på existerande produkter
+  // Kategorier (kan uppdateras på existerande produkter)
   categories?: { id: number }[];
 };
 
@@ -55,7 +53,7 @@ export type WooCreate = {
   name: string;
   sku: string;
   type?: "simple" | "external" | "grouped" | "variable";
-  status?: WooStatus; // "draft" som default när vi saknar pris
+  status?: WooStatus; // vi brukar köra "draft" när pris saknas
   regular_price?: string;
   description?: string;
   short_description?: string;
@@ -64,17 +62,28 @@ export type WooCreate = {
   meta_data?: WooMeta[];
 };
 
+export type WCCategoryPayload = {
+  name: string;
+  parent?: number;
+  slug?: string;
+  description?: string;
+  meta_data?: Array<{ key: string; value: any }>;
+};
+
 /* --------------------------------------------------------------- */
-/* Helpers                                                         */
+/* Utils                                                           */
 /* --------------------------------------------------------------- */
 
+export const wooEnvOk = () => Boolean(WP_URL && WC_KEY && WC_SECRET);
+
 function requireEnv() {
-  if (!WP_URL || !WC_KEY || !WC_SECRET) {
+  if (!wooEnvOk()) {
     throw new Error("Woo env saknas: WP_URL/WC_KEY/WC_SECRET");
   }
 }
 
 function authHeader(): string {
+  // Woo v3: Basic auth (måste vara över HTTPS – vilket WP_URL är)
   return "Basic " + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString("base64");
 }
 
@@ -94,20 +103,23 @@ function buildUrl(path: string): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Läs body som JSON, kasta vettigt fel om det inte är JSON */
 export async function readJsonSafe<T = any>(res: Response): Promise<T> {
   const txt = await res.text();
   try {
     return JSON.parse(txt) as T;
   } catch {
-    throw new Error(`WC JSON parse error ${res.status}: ${txt.slice(0, 300)}`);
+    throw new Error(`WC JSON parse error ${res.status}: ${txt.slice(0, 500)}`);
   }
 }
 
 /* --------------------------------------------------------------- */
-/* wcFetch med enkel backoff                                       */
+/* wcFetch med exponential-ish backoff och felhantering            */
 /* --------------------------------------------------------------- */
 
-export async function wcFetch(path: string, init?: RequestInit): Promise<Response> {
+type FetchInit = RequestInit & { retry?: number };
+
+export async function wcFetch(path: string, init?: FetchInit): Promise<Response> {
   requireEnv();
   const url = buildUrl(path);
   const headers: Record<string, string> = {
@@ -116,33 +128,42 @@ export async function wcFetch(path: string, init?: RequestInit): Promise<Respons
     ...(init?.headers as Record<string, string> | undefined),
   };
 
-  let lastErr: any;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  const maxAttempts = Math.max(1, Math.min(7, (init?.retry ?? 5) + 1));
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const res = await fetch(url, { ...init, headers });
+
       if (res.ok) return res;
 
-      // 429/5xx => backoff
+      // 429/5xx ⇒ backoff + retry
       if (res.status === 429 || res.status >= 500) {
-        await sleep(400 + attempt * 300);
+        const wait = 400 + attempt * 350; // mild ökning
+        await sleep(wait);
         continue;
       }
+
+      // Övriga fel: kasta med text
       const body = await res.text();
-      throw new Error(`Woo ${res.status}: ${body}`);
+      throw new Error(`Woo ${res.status} ${res.statusText}: ${body}`);
     } catch (e) {
       lastErr = e;
-      await sleep(400 + attempt * 300);
+      // nätverksfel/timeouts ⇒ backoff och försök igen
+      const wait = 400 + attempt * 350;
+      await sleep(wait);
     }
   }
+
   throw lastErr ?? new Error("wcFetch failed");
 }
 
 /* --------------------------------------------------------------- */
-/* Bekvämligheter                                                   */
+/* Små bekvämligheter                                               */
 /* --------------------------------------------------------------- */
 
 export async function wcGetJSON<T = any>(path: string): Promise<T> {
-  const res = await wcFetch(path);
+  const res = await wcFetch(path, { method: "GET" });
   return readJsonSafe<T>(res);
 }
 
@@ -156,10 +177,18 @@ export async function wcPutJSON<T = any>(path: string, payload: any): Promise<T>
   return readJsonSafe<T>(res);
 }
 
+export async function wcDeleteJSON<T = any>(path: string): Promise<T> {
+  const res = await wcFetch(path, { method: "DELETE" });
+  return readJsonSafe<T>(res);
+}
+
+/* --------------------------------------------------------------- */
+/* Produkt-helpers                                                  */
+/* --------------------------------------------------------------- */
+
 /** Hämta produkt via SKU → returnera första träffen eller null */
 export async function wcFindProductIdBySku(sku: string): Promise<number | null> {
-  // per_page=1 gör svaret lite snabbare och mindre
-  const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}&per_page=1`);
+  const res = await wcFetch(`/products?sku=${encodeURIComponent(sku)}&per_page=1`, { method: "GET" });
   if (!res.ok) return null;
   const arr = await readJsonSafe<any[]>(res);
   if (Array.isArray(arr) && arr[0]?.id) return Number(arr[0].id);
@@ -173,7 +202,7 @@ export async function wcBatchUpdateProducts(updates: WooUpdate[]): Promise<numbe
   let done = 0;
   for (let i = 0; i < updates.length; i += 100) {
     const chunk = updates.slice(i, i + 100);
-    const res = await wcPostJSON<{ update?: any[] }>(`/products/batch`, { update: chunk });
+    const res = await wcPostJSON<{ update?: Array<{ id: number }> }>(`/products/batch`, { update: chunk });
     done += Array.isArray(res.update) ? res.update.length : 0;
   }
   return done;
@@ -196,16 +225,8 @@ export async function wcBatchCreateProducts(items: WooCreate[]): Promise<{ count
 }
 
 /* --------------------------------------------------------------- */
-/* Woo categories helpers                                          */
+/* Kategori-helpers                                                 */
 /* --------------------------------------------------------------- */
-
-export type WCCategoryPayload = {
-  name: string;
-  parent?: number;
-  slug?: string;
-  description?: string;
-  meta_data?: Array<{ key: string; value: any }>;
-};
 
 export async function wcGetAllCategories(): Promise<any[]> {
   const out: any[] = [];
@@ -227,13 +248,19 @@ export async function wcUpdateCategory(id: number, payload: Partial<WCCategoryPa
 }
 
 /** Exakt namnjämförelse (case-insensitive) + parent */
-export async function wcEnsureCategory(name: string, parent?: number, meta?: Record<string, any>): Promise<number> {
+export async function wcEnsureCategory(
+  name: string,
+  parent?: number,
+  meta?: Record<string, any>
+): Promise<number> {
   const all = await wcGetAllCategories();
   const n = name.trim().toLowerCase();
-  const match = all.find((c) => String(c.name || "").trim().toLowerCase() === n && Number(c.parent || 0) === Number(parent || 0));
+  const match = all.find(
+    (c) => String(c.name || "").trim().toLowerCase() === n && Number(c.parent || 0) === Number(parent || 0)
+  );
   if (match?.id) return Number(match.id);
+
   const meta_data = meta ? Object.entries(meta).map(([key, value]) => ({ key, value })) : undefined;
   const created = await wcCreateCategory({ name, parent, meta_data });
   return Number(created.id);
 }
-
