@@ -1,21 +1,22 @@
+// api/britpart-products/index.ts
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { britpartFetch } from "../shared/britpart";
+import { britpartGet } from "../shared/britpart";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+} as const;
 
 type PartsResponse = {
   ok: boolean;
   mode: "single" | "multi";
-  total?: number;       // från källsidan (single)
-  totalPages?: number;  // från källsidan (single)
-  page?: number;        // vilken sida som returneras (single)
-  count: number;        // antal items i 'parts'
+  total?: number;
+  totalPages?: number;
+  page?: number;
+  count: number;
   parts: any[];
-  details?: any;        // per underkategori debug vid multi
+  details?: any;
   params: Record<string, any>;
 };
 
@@ -29,31 +30,35 @@ app.http("britpart-products", {
     try {
       const u = new URL(req.url);
       const page = Number(u.searchParams.get("page") || 1);
-      const pageSize = Number(u.searchParams.get("pageSize") || 200); // tillåt större sidor
+      const pageSize = Number(u.searchParams.get("pageSize") || 200);
       const code = u.searchParams.get("code") || undefined;
       const modifiedSince = u.searchParams.get("modifiedSince") || undefined;
       const subcategoryId = u.searchParams.get("subcategoryId") || undefined;
 
-      // stöd för flera underkategorier: ?subcategoryIds=62,44,43
-      const subcategoryIdsParam = (u.searchParams.get("subcategoryIds") || "")
-        .split(",").map(s => s.trim()).filter(Boolean);
+      // Stöd för flera underkategorier: ?subcategoryIds=62,44,43
+      const subcategoryIds = (u.searchParams.get("subcategoryIds") || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
 
-      // --- MULTI-MODE: hämta alla sidor för exakt de angivna underkategorierna ---
-      if (subcategoryIdsParam.length > 0) {
+      if (subcategoryIds.length > 0) {
         const all: any[] = [];
         const details: Record<string, { pages: number; fetched: number }> = {};
 
-        for (const sid of subcategoryIdsParam) {
+        for (const sid of subcategoryIds) {
           let p = 1;
           let fetchedForSid = 0;
           let totalPagesForSid = 1;
 
           while (true) {
-            const res = await britpartFetch("/part/getall", { page: p, pageSize, code, modifiedSince, subcategoryId: sid });
-            const text = await res.text();
-            if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text.slice(0, 160)}`);
+            const j = await britpartGet<any>("/part/getall", {
+              page: p,
+              pageSize,
+              code,
+              modifiedSince,
+              subcategoryId: sid,
+            });
 
-            const j = JSON.parse(text);
             const parts = Array.isArray(j.parts) ? j.parts : [];
             all.push(...parts);
             fetchedForSid += parts.length;
@@ -72,33 +77,28 @@ app.http("britpart-products", {
           count: all.length,
           parts: all,
           details,
-          params: { subcategoryIds: subcategoryIdsParam, pageSize, code, modifiedSince }
+          params: { subcategoryIds, pageSize, code, modifiedSince },
         };
-
-        return { status: 200, jsonBody: out, headers: CORS };
+        return { status: 200, headers: CORS, jsonBody: out };
       }
 
-      // --- SINGLE-MODE: behåll ditt gamla beteende (en sida) ---------------------
-      const res = await britpartFetch("/part/getall", { page, pageSize, code, modifiedSince, subcategoryId });
-      const text = await res.text();
-      if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text.slice(0, 160)}`);
-
-      const j = JSON.parse(text);
+      // Single-mode
+      const j = await britpartGet<any>("/part/getall", { page, pageSize, code, modifiedSince, subcategoryId });
       const parts = Array.isArray(j.parts) ? j.parts : [];
       const out: PartsResponse = {
         ok: true,
         mode: "single",
-        total: Number(j.total ?? (Array.isArray(j.parts) ? j.parts.length : 0)),
+        total: Number(j.total ?? parts.length),
         totalPages: Number(j.totalPages ?? 1),
         page: Number(j.page ?? page),
         count: parts.length,
         parts,
-        params: { subcategoryId, page, pageSize, code, modifiedSince }
+        params: { subcategoryId, page, pageSize, code, modifiedSince },
       };
 
-      return { status: 200, jsonBody: out, headers: CORS };
+      return { status: 200, headers: CORS, jsonBody: out };
     } catch (e: any) {
-      return { status: 500, jsonBody: { ok: false, error: e?.message || "britpart-products failed" }, headers: CORS };
+      return { status: 500, headers: CORS, jsonBody: { ok: false, error: e?.message || "britpart-products failed" } };
     }
   },
 });

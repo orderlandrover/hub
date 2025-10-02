@@ -1,5 +1,6 @@
+// api/britpart-probe/index.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { britpartFetch } from "../shared/britpart";
+import { britpartGet } from "../shared/britpart";
 
 app.http("britpart-probe", {
   route: "britpart-probe",
@@ -7,12 +8,11 @@ app.http("britpart-probe", {
   authLevel: "anonymous",
   handler: async (_req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      const res = await britpartFetch("/part/getall", { page: 1 });
-      const text = await res.text();
-      return { status: 200, body: text };
+      const j = await britpartGet<any>("/part/getall", { page: 1 });
+      return { status: 200, jsonBody: j };
     } catch (e: any) {
-      ctx.error(e);
-      return { status: 500, jsonBody: { error: e.message ?? "britpart-probe failed" } };
+      ctx.error?.(e);
+      return { status: 500, jsonBody: { error: e?.message ?? "britpart-probe failed" } };
     }
-  }
+  },
 });

@@ -1,11 +1,12 @@
+// api/britpart-getall/index.ts
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { britpartFetch } from "../shared/britpart";
+import { britpartGet } from "../shared/britpart";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+} as const;
 
 type PartsResponse = {
   total: number;
@@ -22,16 +23,12 @@ app.http("britpart-getall", {
     if (req.method === "OPTIONS") return { status: 200, headers: CORS };
 
     try {
-      const url = new URL(req.url);
-      const page = Number(url.searchParams.get("page") || 1);
-      const code = url.searchParams.get("code") || undefined;
-      const modifiedSince = url.searchParams.get("modifiedSince") || undefined;
+      const u = new URL(req.url);
+      const page = Number(u.searchParams.get("page") || 1);
+      const code = u.searchParams.get("code") || undefined;
+      const modifiedSince = u.searchParams.get("modifiedSince") || undefined;
 
-      const res = await britpartFetch("/part/getall", { page, code, modifiedSince });
-      const text = await res.text();
-      if (!res.ok) throw new Error(`Britpart getall ${res.status}: ${text.slice(0, 160)}`);
-
-      const j = JSON.parse(text);
+      const j = await britpartGet<any>("/part/getall", { page, code, modifiedSince });
       const out: PartsResponse = {
         total: Number(j.total ?? (Array.isArray(j.parts) ? j.parts.length : 0)),
         totalPages: Number(j.totalPages ?? 1),
@@ -39,9 +36,9 @@ app.http("britpart-getall", {
         parts: Array.isArray(j.parts) ? j.parts : [],
       };
 
-      return { status: 200, jsonBody: out, headers: CORS };
+      return { status: 200, headers: CORS, jsonBody: out };
     } catch (e: any) {
-      return { status: 500, jsonBody: { error: e?.message || "britpart-getall failed" }, headers: CORS };
+      return { status: 500, headers: CORS, jsonBody: { error: e?.message || "britpart-getall failed" } };
     }
   },
 });
