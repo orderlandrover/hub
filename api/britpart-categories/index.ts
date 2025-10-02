@@ -2,10 +2,10 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getCategory } from "../shared/britpart";
 
-app.http("Britpart.Categories", {
+app.http("Britpart-Categories", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
-  route: "britpart/categories",
+  route: "britpart-categories",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     try {
       const parentId = Number(req.query.get("parentId") ?? "3"); // default "All Parts"
