@@ -1,5 +1,5 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { wcGetJSON, wcPostJSON } from "../shared/wc";
+import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "../shared/wc";
 
 /* --------------------------------------------------------------- */
 /* CORS                                                            */
@@ -16,7 +16,7 @@ type BulkBody = {
   productIds: number[];
   /** 'set' = ersätter helt, 'add' = lägger till, 'remove' = tar bort */
   action: "set" | "add" | "remove";
-  /** en eller flera kategorier */
+  /** en eller flera Woo-kategori-ID:n */
   categoryIds: number[];
   /** Torrkörning: bygg plan men uppdatera inte i Woo */
   dryRun?: boolean;
@@ -65,9 +65,7 @@ function nextCategories(
   const cur = Array.isArray(current) ? current.map(c => Number(c.id)) : [];
   const cats = uniqSorted(catIds);
 
-  if (action === "set") {
-    return cats.map(id => ({ id }));
-  }
+  if (action === "set") return cats.map(id => ({ id }));
 
   const set = new Set(cur);
   if (action === "add") {
@@ -80,7 +78,10 @@ function nextCategories(
   return uniqSorted(Array.from(set)).map(id => ({ id }));
 }
 
-async function postBatchUpdates(updates: Array<{ id: number; categories: Array<{ id: number }> }>, ctx: InvocationContext) {
+async function postBatchUpdates(
+  updates: Array<{ id: number; categories: Array<{ id: number }> }>,
+  ctx: InvocationContext
+) {
   let updated = 0;
   const failed: number[] = [];
 
@@ -139,10 +140,30 @@ app.http("wc-products-bulk", {
         return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "categoryIds saknas/ogiltiga" } };
       }
 
+      /* ---------- Validera kategori-IDs mot Woo ---------- */
+      where = "validate-categories";
+      const allCats = await wcGetAllCategories(); // hämtar alla Woo-kategorier (paginerat)
+      const wooIds = new Set<number>(allCats.map(c => Number(c.id)).filter(n => Number.isFinite(n)));
+      const unknownCategoryIds = categoryIds.filter(id => !wooIds.has(id));
+      if (unknownCategoryIds.length) {
+        return {
+          status: 400,
+          headers: CORS,
+          jsonBody: {
+            ok: false,
+            where,
+            error: "Vissa categoryIds finns inte i Woo",
+            unknownCategoryIds,
+          },
+        };
+      }
+
+      /* ---------- Läs produkter ---------- */
       where = "fetch-products";
       const prodMap = await fetchProductsLite(productIds, ctx);
       const notFoundIds = productIds.filter(id => !prodMap.has(id));
 
+      /* ---------- Bygg plan ---------- */
       where = "plan";
       const plan = productIds
         .map(id => {
@@ -175,6 +196,23 @@ app.http("wc-products-bulk", {
         };
       }
 
+      if (!toUpdate.length) {
+        return {
+          status: 200,
+          headers: CORS,
+          jsonBody: {
+            ok: true,
+            where: "no-op",
+            updated: 0,
+            skipped: plan.filter(p => p.same).map(p => p.id),
+            failedIds: [],
+            notFoundIds,
+            totalConsidered: plan.length,
+          },
+        };
+      }
+
+      /* ---------- Apply ---------- */
       where = "apply";
       const { updated, failed } = await postBatchUpdates(toUpdate, ctx);
 
