@@ -49,7 +49,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ username: u, password: p }),
       });
       const txt = await r.text();
-      if (!r.ok) throw new Error(txt || "Login failed");
+      if (!r.ok) throw new Error(txt || "Fel Lösenord");
       setState("ok");
     } catch (e: any) {
       setErr(e?.message || String(e));
