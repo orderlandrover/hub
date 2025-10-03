@@ -19,7 +19,7 @@ jobs:
           submodules: false
           lfs: false
 
-      # Bygg frontend lokalt (förutsägbart)
+      # Bygg frontend lokalt (snabbt/förutsägbart)
       - name: Setup Node.js (frontend)
         uses: actions/setup-node@v4
         with:
@@ -30,14 +30,7 @@ jobs:
           npm ci
           npm run build --if-present
 
-      # Bygg Functions (TypeScript -> dist/) innan SWA-deploy
-      - name: Build functions
-        working-directory: api
-        run: |
-          npm ci
-          npm run build
-
-      # Deploy till Azure Static Web Apps
+      # Deploy till SWA (frontend + låt Oryx bygga Functions från api/)
       - name: Build & Deploy (SWA)
         uses: Azure/static-web-apps-deploy@v1
         with:
@@ -47,12 +40,12 @@ jobs:
           # Frontend (Vite output)
           app_location: /
           output_location: dist
-          # (låter Oryx bygga om vid behov i PR-miljöer)
           app_build_command: npm ci && npm run build --if-present
 
-          # Functions: PEKA PÅ BUILD OUTPUT
-          api_location: api/dist
-          # inget api_build_command här – vi har redan byggt ovan
+          # Viktigt: PEKA PÅ KÄLLKODEN, inte dist
+          api_location: api
+          # Kör TS-build innan publicering (Oryx kör detta i api/)
+          api_build_command: npm ci && npm run build
 
           production_branch: main
 
@@ -67,4 +60,4 @@ jobs:
           action: close
           app_location: /
           output_location: dist
-          api_location: api/dist
+          api_location: api
