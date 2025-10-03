@@ -5,11 +5,10 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-    types: [opened, synchronize, reopened, closed]
+    types: [ opened, synchronize, reopened, closed ]
 
 jobs:
   build_and_deploy:
-    # kör inte deploy-steget när PR stängs (det sköts av jobben nedan)
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
 
@@ -20,7 +19,7 @@ jobs:
           submodules: false
           lfs: false
 
-      # Bygg frontend lokalt med Node 20 (snabbt, förutsägbart)
+      # Bygg frontend lokalt (förutsägbart)
       - name: Setup Node.js (frontend)
         uses: actions/setup-node@v4
         with:
@@ -31,7 +30,14 @@ jobs:
           npm ci
           npm run build --if-present
 
-      # Deploy via SWA-action
+      # Bygg Functions (TypeScript -> dist/) innan SWA-deploy
+      - name: Build functions
+        working-directory: api
+        run: |
+          npm ci
+          npm run build
+
+      # Deploy till Azure Static Web Apps
       - name: Build & Deploy (SWA)
         uses: Azure/static-web-apps-deploy@v1
         with:
@@ -41,12 +47,12 @@ jobs:
           # Frontend (Vite output)
           app_location: /
           output_location: dist
-          # (vi har redan byggt lokalt, men lämnar kommandot för trygghet i PR-miljöer)
+          # (låter Oryx bygga om vid behov i PR-miljöer)
           app_build_command: npm ci && npm run build --if-present
 
-          # Functions (byggs av Oryx i SWA från källkod i api/)
-          api_location: api
-          api_build_command: npm ci && npm run build
+          # Functions: PEKA PÅ BUILD OUTPUT
+          api_location: api/dist
+          # inget api_build_command här – vi har redan byggt ovan
 
           production_branch: main
 
@@ -61,4 +67,4 @@ jobs:
           action: close
           app_location: /
           output_location: dist
-          api_location: api
+          api_location: api/dist
