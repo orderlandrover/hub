@@ -1,5 +1,5 @@
 // api/index.ts
-import "./shared/secure-all";        // <-- must be first to wrap app.http
+//import "./shared/secure-all";        // <-- must be first to wrap app.http
 
 
 // AUTH (läggs tidigt så de finns)
