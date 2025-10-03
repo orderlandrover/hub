@@ -20,7 +20,7 @@ import "./wc-products-bulk";
 import "./britpart-products";
 import "./britpart-categories";
 import "./britpart-getall";
-import "./britpart-subcategories";  // <-- VIKTIGT: bindestreck
+import "./britpart-subcategories";  
 import "./sync-britpart-categories";
 import "./britpart-probe-categories";
 
