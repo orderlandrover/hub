@@ -19,10 +19,7 @@
     { "route": "/set-category",    "rewrite": "/api/set-category" },
     { "route": "/set-category/*",  "rewrite": "/api/set-category/*" },
 
-    { "route": "/api/*",           "allowedRoles": ["anonymous"] },
-    { "route": "/api/auth-login",  "allowedRoles": ["anonymous"] },
-    { "route": "/api/auth-logout", "allowedRoles": ["anonymous"] },
-    { "route": "/api/auth-me",     "allowedRoles": ["anonymous"] }
+    { "route": "/api/*",           "allowedRoles": ["anonymous"] }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",
