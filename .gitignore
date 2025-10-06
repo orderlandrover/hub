@@ -71,3 +71,10 @@ Desktop.ini
 *.tar.gz
 *.tmp
 *.bak
+
+# Azure Functions (TypeScript → JS) – ignorera buildartefakter
+api/dist/
+api/.tsbuildinfo
+api/**/*.js
+api/**/*.js.map
+api/**/*.d.ts
