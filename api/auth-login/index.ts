@@ -1,4 +1,3 @@
-// auth-login
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { credentialsOk, setAuthCookie } from "../shared/auth";
 
@@ -22,7 +21,6 @@ app.http("auth-login", {
         return { status: 401, headers: CORS, jsonBody: { ok: false, error: "Fel användarnamn/lösenord" } };
       }
       const headers: Record<string, string> = { ...CORS };
-      // Viktigt: setAuthCookie ska sätta headers["Set-Cookie"] med Path=/; Secure; HttpOnly; SameSite=None
       setAuthCookie(headers, String(username));
       return { status: 200, headers, jsonBody: { ok: true } };
     } catch (e: any) {

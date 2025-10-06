@@ -1,12 +1,11 @@
-// api/shared/auth.ts
 import { HttpRequest, InvocationContext } from "@azure/functions";
 import crypto from "crypto";
 
 const COOKIE = "hub_auth";
-const USER  = process.env.AUTH_USER  || "admin";
-const PASS  = process.env.AUTH_PASS  || "changeme";
-const SECRET= process.env.AUTH_SECRET|| "change-this-to-long-random";
-const TTL_H = Math.max(1, Number(process.env.AUTH_TTL_HOURS || "12"));
+const USER   = process.env.AUTH_USER   || "admin";
+const PASS   = process.env.AUTH_PASS   || "changeme";
+const SECRET = process.env.AUTH_SECRET || "change-this-to-long-random";
+const TTL_H  = Math.max(1, Number(process.env.AUTH_TTL_HOURS || "12"));
 
 type Session = { u: string; exp: number };
 

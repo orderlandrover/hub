@@ -1,4 +1,3 @@
-// auth-me
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { requireAuth } from "../shared/auth";
 
