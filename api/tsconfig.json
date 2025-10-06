@@ -4,17 +4,13 @@
     "module": "CommonJS",
     "moduleResolution": "Node",
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./",
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "incremental": true,
-    "tsBuildInfoFile": "./.tsbuildinfo",
-    "lib": ["ES2020", "DOM"],
-    "types": ["node"]   // <-- ta bort "@azure/functions"
+    "types": ["node", "@azure/functions"]
   },
-  "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", ".oryx_prod_node_modules", "**/*.spec.ts"]
+  "include": ["./**/*.ts"],
+  "exclude": ["./dist", "./node_modules"]
 }
