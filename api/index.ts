@@ -8,6 +8,7 @@ import "./auth-me/index";
 
 // HÄLSA
 import "./ping/index";
+import "./auth-diag"
 
 // PRODUKTER (Woo)
 import "./products-list/index";
