@@ -1,42 +1,56 @@
 // api/index.ts
-import "./shared/secure-all";
+import "./shared/secure-all";  // MÅSTE vara först
 
-// === Auth & health ===
+// === Auth & health (måste alltid funka) ===
 import "./auth-login";
 import "./auth-logout";
 import "./auth-me";
 import "./auth-diag";
 import "./ping";
 
+// === Safe loader för resten (så hosten inte dör om en modul spricker) ===
+type NodeRequire = NodeJS.Require;
+// eval("require") undviker bundlers/cirklar vid build
+const req: NodeRequire = eval("require");
+
+function safe(mod: string) {
+  try {
+    req(mod); // laddar modulen synkront → registrerar endpoints
+    console.log("[BOOT] OK:", mod);
+  } catch (e: any) {
+    console.error("[BOOT] DISABLED:", mod, "-", e?.message ?? e);
+  }
+}
+
 // === Produkt-CRUD ===
-import "./products-list";
-import "./products-update";
-import "./products-delete";
-import "./products-update-bulk";
-import "./products-delete-bulk";
+safe("./products-list");
+safe("./products-update");
+safe("./products-delete");
+safe("./products-update-bulk");
+safe("./products-delete-bulk");
 
 // === Britpart ===
-import "./britpart-products";
-import "./britpart-categories";
-import "./britpart-subcategories";
-import "./britpart-getall";
-import "./britpart-probe";
-import "./britpart-probe-categories";
-import "./sync-britpart-categories";
+safe("./britpart-products");
+safe("./britpart-categories");
+safe("./britpart-subcategories");
+safe("./britpart-getall");
+safe("./britpart-probe");
+safe("./britpart-probe-categories");
+safe("./sync-britpart-categories");
 
 // === WooCommerce ===
-import "./wc-categories";
-import "./wc-products-bulk";
-import "./wc-products-verify";
+safe("./wc-categories");
+safe("./wc-products-bulk");
+safe("./wc-products-verify");
 
 // === Importflöden ===
-import "./import-one";
-import "./import-probe";
-import "./import-dry-run";
-import "./import-run";
+safe("./import-one");
+safe("./import-probe");
+safe("./import-dry-run");
+safe("./import-run");
 
 // === Prisuppladdning ===
-import "./price-upload";
-import "./price-upload-from-blob";
-import "./price-upload-probe";
-import "./price-upload-sas";
+safe("./price-upload");
+safe("./price-upload-from-blob");
+safe("./price-upload-probe");
+safe("./price-upload-sas");
