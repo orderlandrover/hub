@@ -1,32 +1,23 @@
-import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "true",
-} as const;
+import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 
 app.http("auth-diag", {
   route: "auth-diag",
-  methods: ["GET", "OPTIONS"],
+  methods: ["GET"],
   authLevel: "anonymous",
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
-    try {
-      return {
-        status: 200,
-        headers: CORS,
-        jsonBody: {
-          ok: true,
-          node: process.version,
-          has_AUTH_USER: !!process.env.AUTH_USER,
-          has_AUTH_PASS: !!process.env.AUTH_PASS,
-          AUTH_SECRET_len: (process.env.AUTH_SECRET || "").length
+  handler: async (_req: HttpRequest, _ctx: InvocationContext): Promise<HttpResponseInit> => {
+    // Avsiktligt inga beroenden – bara returnera lite miljöinfo
+    return {
+      status: 200,
+      jsonBody: {
+        ok: true,
+        node: process.version,
+        env: {
+          AUTH_USER: process.env.AUTH_USER || null,
+          AUTH_PASS: process.env.AUTH_PASS || null,
+          AUTH_SECRET_len: (process.env.AUTH_SECRET || "").length, // bara längden, inte värdet
+          AUTH_TTL_HOURS: process.env.AUTH_TTL_HOURS || null
         }
-      };
-    } catch (e: any) {
-      return { status: 500, headers: CORS, jsonBody: { ok: false, error: String(e?.message || e) } };
-    }
+      }
+    };
   }
 });
