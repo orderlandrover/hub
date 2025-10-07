@@ -1,5 +1,4 @@
 // api/index.ts
-// === Viktigt: lasta säkerhetsgardet först ===
 import "./shared/secure-all";
 
 // === Auth & health ===
