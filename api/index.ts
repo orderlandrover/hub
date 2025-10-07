@@ -1,34 +1,45 @@
-// INGA wrappers eller andra imports tills vidare.
-// Vi håller ytan minimal för att hitta felet.
+// api/index.ts
+// === Viktigt: lasta säkerhetsgardet först ===
+import "./shared/secure-all";
 
+// === Auth & health ===
 import "./auth-login";
 import "./auth-logout";
 import "./auth-me";
 import "./auth-diag";
 import "./ping";
 
-// (Kommentera allt annat i index.ts för stunden)
+// === Produkt-CRUD ===
+import "./products-list";
+import "./products-update";
+import "./products-delete";
+import "./products-update-bulk";
+import "./products-delete-bulk";
 
+// === Britpart ===
+import "./britpart-products";
+import "./britpart-categories";
+import "./britpart-subcategories";
+import "./britpart-getall";
+import "./britpart-probe";
+import "./britpart-probe-categories";
+import "./sync-britpart-categories";
 
-// === ALLT nedan AV för tillfället (orsakar crash i Node 18) ===
-//import "./products-list";
-//import "./products-update";
-//import "./products-delete";
-//import "./products-update-bulk";
-//import "./products-delete-bulk";
-//import "./wc-categories";
-//import "./wc-products-bulk";
-//import "./britpart-products";
-//import "./britpart-categories";
-//import "./britpart-getall";
-//import "./britpart-subcategories";
-//import "./sync-britpart-categories";
-//import "./britpart-probe-categories";
-//import "./import-one";
-//import "./import-dry-run";
-//import "./import-run";
-//import "./price-upload";
-//import "./price-upload-sas";
-//import "./price-upload-from-blob";
-//import "./price-upload-probe";
-//import "./import-probe";
+// === WooCommerce ===
+import "./wc-categories";
+import "./wc-products-bulk";
+import "./wc-products-verify";
+
+// === Importflöden ===
+import "./import-one";
+import "./import-probe";
+import "./import-dry-run";
+import "./import-run";
+
+// === Prisuppladdning ===
+import "./price-upload";
+import "./price-upload-from-blob";
+import "./price-upload-probe";
+import "./price-upload-sas";
+
+// (ev. fler endpoints kan läggas här nedanför)
