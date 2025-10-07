@@ -10,7 +10,7 @@ const CORS = {
 } as const;
 
 // öppna endpoints (ingen auth)
-const ALLOW = new Set<string>(["auth-login", "auth-logout", "auth-me", "ping"]);
+const ALLOW = new Set<string>(["auth-login", "auth-logout", "auth-me", "ping","auth-diag"]);
 
 function unauthorized(): HttpResponseInit {
   return { status: 401, headers: CORS, jsonBody: { ok: false, error: "Not authenticated" } };
