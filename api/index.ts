@@ -40,5 +40,3 @@ import "./price-upload";
 import "./price-upload-from-blob";
 import "./price-upload-probe";
 import "./price-upload-sas";
-
-// (ev. fler endpoints kan läggas här nedanför)
