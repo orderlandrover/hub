@@ -2,12 +2,10 @@ name: Azure Static Web Apps CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-    branches:
-      - main
-    types: [opened, synchronize, reopened, closed]
+    branches: [ main ]
+    types: [ opened, synchronize, reopened, closed ]
 
 jobs:
   build_and_deploy:
@@ -18,8 +16,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Bygg frontend (Vite)
-      - name: Setup Node.js
+      # (valfritt men bra) bygg frontend här så output blir förutsägbar
+      - name: Setup Node.js (frontend)
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
@@ -29,7 +27,7 @@ jobs:
           npm ci
           npm run build --if-present
 
-      # Deploy till SWA – kör Functions från kompilerad output i api/dist
+      # LÅT SWA bygga Functions från KÄLLKOD i /api (inte api/dist)
       - name: Build & Deploy (SWA)
         uses: Azure/static-web-apps-deploy@v1
         with:
@@ -40,7 +38,9 @@ jobs:
           output_location: dist
           app_build_command: npm ci && npm run build --if-present
 
-          api_location: api/dist
+          api_location: api
+          api_build_command: npm ci && npm run build
+
           production_branch: main
 
   close_pr_env:
@@ -54,4 +54,4 @@ jobs:
           action: close
           app_location: /
           output_location: dist
-          api_location: api/dist
+          api_location: api
