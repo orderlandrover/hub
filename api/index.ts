@@ -1,41 +1,31 @@
 // api/index.ts
-import "./shared/secure-all"; // måste vara först
+import "./shared/secure-all";          // måste vara först
 
-// AUTH
-import "./auth-login/index";
-import "./auth-logout/index";
-import "./auth-me/index";
+// === öppna/auth endpoints som ska fungera nu ===
+import "./auth-login";
+import "./auth-logout";
+import "./auth-me";
+import "./ping";
 
-// HÄLSA
-import "./ping/index";
-import "./auth-diag"
-
-// PRODUKTER (Woo)
-import "./products-list/index";
-import "./products-update/index";
-import "./products-delete/index";
-import "./products-update-bulk/index";
-import "./products-delete-bulk/index";
-import "./wc-categories/index";
-import "./wc-products-bulk/index";
-import "./wc-products-verify";        // fil, inte mapp
-
-// BRITPART
-import "./britpart-products/index";
-import "./britpart-categories/index";
-import "./britpart-getall/index";
-import "./britpart-subcategories/index";
-import "./britpart-probe/index";
-import "./britpart-probe-categories/index";
-// OBS: i din vy såg "sync-britpart-categories" ut som en FIL (inte mapp):
-import "./sync-britpart-categories";  // <-- om det i stället är en mapp: byt till "/index"
-
-// IMPORT/FILER
-import "./import-one/index";
-import "./import-dry-run/index";
-import "./import-run/index";
-import "./import-probe/index";
-import "./price-upload/index";
-import "./price-upload-sas/index";
-import "./price-upload-from-blob/index";
-import "./price-upload-probe/index";
+// === ALLT nedan AV för tillfället (orsakar crash i Node 18) ===
+// import "./products-list";
+// import "./products-update";
+// import "./products-delete";
+// import "./products-update-bulk";
+// import "./products-delete-bulk";
+// import "./wc-categories";
+// import "./wc-products-bulk";
+// import "./britpart-products";
+// import "./britpart-categories";
+// import "./britpart-getall";
+// import "./britpart-subcategories";
+// import "./sync-britpart-categories";
+// import "./britpart-probe-categories";
+// import "./import-one";
+// import "./import-dry-run";
+// import "./import-run";
+// import "./price-upload";
+// import "./price-upload-sas";
+// import "./price-upload-from-blob";
+// import "./price-upload-probe";
+// import "./import-probe";
