@@ -1,69 +1,48 @@
 // api/wc-products-bulk.ts
-import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import {
+  app,
+  HttpRequest,
+  HttpResponseInit,
+  InvocationContext,
+  HttpMethod,
+  HttpFunctionOptions,
+} from "@azure/functions";
 import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "../shared/wc";
 
-/* --------------------------------------------------------------- */
-/* CORS (enkelt — secure-all lägger dessutom dynamiskt Origin)     */
-/* --------------------------------------------------------------- */
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-} as const;
+/* ----------------------------- utils ----------------------------- */
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
-/* --------------------------------------------------------------- */
-/* Typer                                                           */
-/* --------------------------------------------------------------- */
-type BulkAction = "set" | "add" | "remove";
+function toNum(x: unknown): number | undefined {
+  const n = typeof x === "object" && x !== null && "id" in (x as any) ? Number((x as any).id) : Number(x);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
 
-type BulkBody = {
-  productIds?: unknown;
-  /** 'set' = ersätt helt, 'add' = lägg till, 'remove' = ta bort */
-  action?: BulkAction;
-  /** Woo-kategori-ID:n i valfritt format (se coerceIds) */
-  categoryIds?: unknown;
-  /** Alias för action: replace:true ⇔ action:'set' */
-  replace?: unknown;
-  /** Torrkörning: bygg plan men uppdatera inte i Woo */
-  dryRun?: unknown;
-};
-
-type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
-
-/* --------------------------------------------------------------- */
-/* Helpers                                                         */
-/* --------------------------------------------------------------- */
-
-/** Tål number[], string[], "1,2,3", [{id:1}, {id:"2"}] osv. */
-function coerceIds(x: unknown): number[] {
-  const pushNum = (arr: number[], v: unknown) => {
-    const n = Number(v);
-    if (Number.isInteger(n) && n > 0) arr.push(n);
-  };
-
+function parseIds(input: unknown): number[] {
   const out: number[] = [];
-
-  if (Array.isArray(x)) {
-    for (const v of x) {
-      if (v && typeof v === "object" && "id" in (v as any)) {
-        pushNum(out, (v as any).id);
-      } else {
-        pushNum(out, v);
-      }
+  if (Array.isArray(input)) {
+    for (const v of input) {
+      const n = toNum(v);
+      if (n) out.push(n);
     }
-  } else if (typeof x === "string") {
-    for (const part of x.split(/[,\s]+/)) pushNum(out, part);
-  } else if (x && typeof x === "object" && "id" in (x as any)) {
-    pushNum(out, (x as any).id);
-  } else if (typeof x === "number") {
-    pushNum(out, x);
+  } else if (typeof input === "string") {
+    for (const part of input.split(/[,\s;]+/)) {
+      const n = toNum(part);
+      if (n) out.push(n);
+    }
+  } else if (typeof input === "number") {
+    const n = toNum(input);
+    if (n) out.push(n);
   }
-
   // uniq + sort
   return Array.from(new Set(out)).sort((a, b) => a - b);
 }
+
+function uniqSorted(nums: number[]): number[] {
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
 
 async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise<Map<number, WCProductLite>> {
   const map = new Map<number, WCProductLite>();
@@ -85,34 +64,24 @@ async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise
   return map;
 }
 
-function uniqSorted(nums: number[]): number[] {
-  const s = new Set<number>();
-  for (const n of nums) {
-    const v = Number(n);
-    if (Number.isFinite(v) && v > 0) s.add(v);
-  }
-  return Array.from(s).sort((a, b) => a - b);
-}
-
 function nextCategories(
   current: Array<{ id: number }> | undefined,
-  action: BulkAction,
+  action: "set" | "add" | "remove",
   catIds: number[]
 ): Array<{ id: number }> {
-  const cur = Array.isArray(current) ? current.map(c => Number(c.id)) : [];
+  const cur = Array.isArray(current) ? current.map((c) => Number(c.id)) : [];
   const cats = uniqSorted(catIds);
 
-  if (action === "set") return cats.map(id => ({ id }));
+  if (action === "set") return cats.map((id) => ({ id }));
 
   const set = new Set(cur);
   if (action === "add") {
     for (const id of cats) set.add(id);
-    return uniqSorted(Array.from(set)).map(id => ({ id }));
+    return uniqSorted(Array.from(set)).map((id) => ({ id }));
   }
-
   // remove
   for (const id of cats) set.delete(id);
-  return uniqSorted(Array.from(set)).map(id => ({ id }));
+  return uniqSorted(Array.from(set)).map((id) => ({ id }));
 }
 
 async function postBatchUpdates(
@@ -143,87 +112,87 @@ async function postBatchUpdates(
   return { updated, failed };
 }
 
-/* --------------------------------------------------------------- */
-/* Azure Function                                                  */
-/* --------------------------------------------------------------- */
+/* ----------------------------- function ----------------------------- */
 
 app.http("wc-products-bulk", {
   route: "wc-products-bulk",
-  methods: ["POST", "OPTIONS"],
+  methods: ["POST", "OPTIONS"] as HttpMethod[],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (req.method === "OPTIONS") return { status: 204, headers: CORS };
+    // Preflight – secure-all fyller i CORS-headers
+    if (req.method === "OPTIONS") return { status: 204 };
 
     let where = "start";
     try {
-      const raw = (await req.json()) as BulkBody;
+      const body: any = await req.json().catch(() => ({}));
+      ctx.log?.("wc-products-bulk body", JSON.stringify(body));
 
-      // Tolerant parsing
-      const productIds = coerceIds(raw?.productIds);
-      const categoryIds = coerceIds(raw?.categoryIds);
+      // Tolerant parsing av fält/format
+      const productIds =
+        parseIds(body?.productIds ?? body?.ids ?? body?.products) ||
+        []; // accepterar [1, "2", {id:"3"}] eller "1,2,3"
+      const categoryIds =
+        parseIds(body?.categoryIds ?? body?.category_ids ?? body?.categories ?? body?.categoryIDs) || [];
+      const actionRaw = String(body?.action || "set").toLowerCase();
+      const action = (["set", "add", "remove"].includes(actionRaw) ? actionRaw : "set") as "set" | "add" | "remove";
+      const dryRun = !!body?.dryRun;
 
-      let action: BulkAction =
-        raw?.replace ? "set" : (["set", "add", "remove"].includes(String(raw?.action)) ? (raw!.action as BulkAction) : "set");
-
-      const dryRun = !!raw?.dryRun;
-
-      if (productIds.length === 0) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "productIds saknas/ogiltiga" } };
+      if (!productIds.length) {
+        return { status: 400, jsonBody: { ok: false, where, error: "productIds saknas/ogiltiga", got: body?.productIds } };
       }
-      if (categoryIds.length === 0) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "categoryIds saknas/ogiltiga" } };
+      if (!categoryIds.length) {
+        return {
+          status: 400,
+          jsonBody: {
+            ok: false,
+            where,
+            error: "categoryIds saknas/ogiltiga",
+            got: body?.categoryIds ?? body?.categories,
+          },
+        };
       }
 
       /* ---------- Validera kategori-IDs mot Woo ---------- */
       where = "validate-categories";
-      const allCats = await wcGetAllCategories(); // hämtar alla Woo-kategorier (paginerat)
-      const wooIds = new Set<number>(allCats.map(c => Number(c.id)).filter(n => Number.isFinite(n)));
-      const unknownCategoryIds = categoryIds.filter(id => !wooIds.has(id));
+      const allCats = await wcGetAllCategories();
+      const wooIds = new Set<number>(allCats.map((c) => Number(c.id)).filter((n) => Number.isFinite(n)));
+      const unknownCategoryIds = categoryIds.filter((id) => !wooIds.has(id));
       if (unknownCategoryIds.length) {
         return {
           status: 400,
-          headers: CORS,
-          jsonBody: {
-            ok: false,
-            where,
-            error: "Vissa categoryIds finns inte i Woo",
-            unknownCategoryIds,
-          },
+          jsonBody: { ok: false, where, error: "Vissa categoryIds finns inte i Woo", unknownCategoryIds },
         };
       }
 
       /* ---------- Läs produkter ---------- */
       where = "fetch-products";
       const prodMap = await fetchProductsLite(productIds, ctx);
-      const notFoundIds = productIds.filter(id => !prodMap.has(id));
+      const notFoundIds = productIds.filter((id) => !prodMap.has(id));
 
-      /* ---------- Bygg plan ---------- */
+      /* ---------- Plan ---------- */
       where = "plan";
       const plan = productIds
-        .map(id => {
+        .map((id) => {
           const p = prodMap.get(id);
           if (!p) return null;
-          const before = Array.isArray(p.categories) ? p.categories.map(c => Number(c.id)) : [];
-          const after = nextCategories(p.categories, action, categoryIds).map(c => c.id);
+          const before = Array.isArray(p.categories) ? p.categories.map((c) => Number(c.id)) : [];
+          const after = nextCategories(p.categories, action, categoryIds).map((c) => c.id);
           const same = before.join(",") === after.join(",");
           return { id, before: uniqSorted(before), after: uniqSorted(after), same };
         })
         .filter(Boolean) as Array<{ id: number; before: number[]; after: number[]; same: boolean }>;
 
-      const toUpdate = plan
-        .filter(p => !p.same)
-        .map(p => ({ id: p.id, categories: p.after.map(id => ({ id })) }));
+      const toUpdate = plan.filter((p) => !p.same).map((p) => ({ id: p.id, categories: p.after.map((id) => ({ id })) }));
 
       if (dryRun) {
         return {
           status: 200,
-          headers: CORS,
           jsonBody: {
             ok: true,
             where: "dry-run",
             updated: 0,
             failedIds: [],
-            skipped: plan.filter(p => p.same).map(p => p.id),
+            skipped: plan.filter((p) => p.same).map((p) => p.id),
             notFoundIds,
             plan,
           },
@@ -233,12 +202,11 @@ app.http("wc-products-bulk", {
       if (!toUpdate.length) {
         return {
           status: 200,
-          headers: CORS,
           jsonBody: {
             ok: true,
             where: "no-op",
             updated: 0,
-            skipped: plan.filter(p => p.same).map(p => p.id),
+            skipped: plan.filter((p) => p.same).map((p) => p.id),
             failedIds: [],
             notFoundIds,
             totalConsidered: plan.length,
@@ -252,19 +220,18 @@ app.http("wc-products-bulk", {
 
       return {
         status: 200,
-        headers: CORS,
         jsonBody: {
           ok: true,
           where: "done",
           updated,
-          skipped: plan.filter(p => p.same).map(p => p.id),
+          skipped: plan.filter((p) => p.same).map((p) => p.id),
           failedIds: failed,
           notFoundIds,
           totalConsidered: plan.length,
         },
       };
-    } catch (e: any) {
-      return { status: 500, headers: CORS, jsonBody: { ok: false, where, error: emsg(e) } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, where, error: emsg(e) } };
     }
   },
-});
+} as HttpFunctionOptions);
