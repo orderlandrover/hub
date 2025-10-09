@@ -1,8 +1,9 @@
+// api/wc-products-bulk.ts
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "../shared/wc";
 
 /* --------------------------------------------------------------- */
-/* CORS                                                            */
+/* CORS (enkelt — secure-all lägger dessutom dynamiskt Origin)     */
 /* --------------------------------------------------------------- */
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -12,14 +13,21 @@ const CORS = {
 
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
+/* --------------------------------------------------------------- */
+/* Typer                                                           */
+/* --------------------------------------------------------------- */
+type BulkAction = "set" | "add" | "remove";
+
 type BulkBody = {
-  productIds: number[];
-  /** 'set' = ersätter helt, 'add' = lägger till, 'remove' = tar bort */
-  action: "set" | "add" | "remove";
-  /** en eller flera Woo-kategori-ID:n */
-  categoryIds: number[];
+  productIds?: unknown;
+  /** 'set' = ersätt helt, 'add' = lägg till, 'remove' = ta bort */
+  action?: BulkAction;
+  /** Woo-kategori-ID:n i valfritt format (se coerceIds) */
+  categoryIds?: unknown;
+  /** Alias för action: replace:true ⇔ action:'set' */
+  replace?: unknown;
   /** Torrkörning: bygg plan men uppdatera inte i Woo */
-  dryRun?: boolean;
+  dryRun?: unknown;
 };
 
 type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
@@ -27,6 +35,35 @@ type WCProductLite = { id: number; categories?: Array<{ id: number; name?: strin
 /* --------------------------------------------------------------- */
 /* Helpers                                                         */
 /* --------------------------------------------------------------- */
+
+/** Tål number[], string[], "1,2,3", [{id:1}, {id:"2"}] osv. */
+function coerceIds(x: unknown): number[] {
+  const pushNum = (arr: number[], v: unknown) => {
+    const n = Number(v);
+    if (Number.isInteger(n) && n > 0) arr.push(n);
+  };
+
+  const out: number[] = [];
+
+  if (Array.isArray(x)) {
+    for (const v of x) {
+      if (v && typeof v === "object" && "id" in (v as any)) {
+        pushNum(out, (v as any).id);
+      } else {
+        pushNum(out, v);
+      }
+    }
+  } else if (typeof x === "string") {
+    for (const part of x.split(/[,\s]+/)) pushNum(out, part);
+  } else if (x && typeof x === "object" && "id" in (x as any)) {
+    pushNum(out, (x as any).id);
+  } else if (typeof x === "number") {
+    pushNum(out, x);
+  }
+
+  // uniq + sort
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
 
 async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise<Map<number, WCProductLite>> {
   const map = new Map<number, WCProductLite>();
@@ -59,7 +96,7 @@ function uniqSorted(nums: number[]): number[] {
 
 function nextCategories(
   current: Array<{ id: number }> | undefined,
-  action: "set" | "add" | "remove",
+  action: BulkAction,
   catIds: number[]
 ): Array<{ id: number }> {
   const cur = Array.isArray(current) ? current.map(c => Number(c.id)) : [];
@@ -119,24 +156,21 @@ app.http("wc-products-bulk", {
 
     let where = "start";
     try {
-      const body = (await req.json()) as BulkBody;
+      const raw = (await req.json()) as BulkBody;
 
-      const productIds = Array.isArray(body?.productIds)
-        ? body.productIds.map(Number).filter(n => Number.isFinite(n) && n > 0)
-        : [];
-      const action = String(body?.action) as BulkBody["action"];
-      const categoryIds = Array.isArray(body?.categoryIds)
-        ? body.categoryIds.map(Number).filter(n => Number.isFinite(n) && n > 0)
-        : [];
-      const dryRun = !!body?.dryRun;
+      // Tolerant parsing
+      const productIds = coerceIds(raw?.productIds);
+      const categoryIds = coerceIds(raw?.categoryIds);
 
-      if (!productIds.length) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "productIds saknas" } };
+      let action: BulkAction =
+        raw?.replace ? "set" : (["set", "add", "remove"].includes(String(raw?.action)) ? (raw!.action as BulkAction) : "set");
+
+      const dryRun = !!raw?.dryRun;
+
+      if (productIds.length === 0) {
+        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "productIds saknas/ogiltiga" } };
       }
-      if (!["set", "add", "remove"].includes(action)) {
-        return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "ogiltig action" } };
-      }
-      if (!categoryIds.length) {
+      if (categoryIds.length === 0) {
         return { status: 400, headers: CORS, jsonBody: { ok: false, where, error: "categoryIds saknas/ogiltiga" } };
       }
 
