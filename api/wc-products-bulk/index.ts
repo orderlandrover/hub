@@ -1,4 +1,4 @@
-// api/wc-products-bulk.ts
+// api/wc-products-bulk/index.ts
 import {
   app,
   HttpRequest,
@@ -7,7 +7,7 @@ import {
   HttpMethod,
   HttpFunctionOptions,
 } from "@azure/functions";
-import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "./shared/wc";
+import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "../shared/wc";
 
 /* --------------------------------------------------------------- */
 /* CORS                                                            */
@@ -37,6 +37,7 @@ type BulkBody = {
 };
 
 type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
+type WCCategory = { id: number };
 
 /* --------------------------------------------------------------- */
 /* Helpers                                                         */
@@ -79,7 +80,10 @@ function parseIdList(input: unknown): number[] {
     return uniqSorted(out);
   }
 
-  // Okänt format
+  if (typeof input === "number") {
+    return Number.isFinite(input) && input > 0 ? [input] : [];
+  }
+
   return [];
 }
 
@@ -126,7 +130,7 @@ function nextCategories(
   action: BulkAction,
   catIds: number[]
 ): Array<{ id: number }> {
-  const cur = Array.isArray(current) ? current.map((c) => Number(c.id)) : [];
+  const cur = Array.isArray(current) ? current.map((c: { id: number }) => Number(c.id)) : [];
   const cats = uniqSorted(catIds);
 
   if (action === "set") return cats.map((id) => ({ id }));
@@ -239,14 +243,15 @@ const opts: HttpFunctionOptions = {
           },
         };
       }
-      // För "set" tillåt att rensa alla kategorier om listan är tom
-      // (dvs set []).
+      // För "set" tillåt att rensa alla kategorier om listan är tom (set []).
 
       /* ---------- Validera kategori-IDs mot Woo ---------- */
       where = "validate-categories";
       try {
-        const allCats = await wcGetAllCategories(); // hämtar alla Woo-kategorier (paginerat)
-        const wooIds = new Set<number>(allCats.map((c) => Number(c.id)).filter((n) => Number.isFinite(n)));
+        const allCats = (await wcGetAllCategories()) as WCCategory[];
+        const wooIds = new Set<number>(
+          allCats.map((c: WCCategory) => Number(c.id)).filter((n: number) => Number.isFinite(n))
+        );
         const unknown = categoryIds.filter((id) => !wooIds.has(id));
         if (unknown.length) {
           return {
@@ -276,8 +281,9 @@ const opts: HttpFunctionOptions = {
         .map((id) => {
           const p = prodMap.get(id);
           if (!p) return null;
-          const before = Array.isArray(p.categories) ? p.categories.map((c) => Number(c.id)) : [];
-          const after = action === "set" ? categoryIds : nextCategories(p.categories, action, categoryIds).map((c) => c.id);
+          const before = Array.isArray(p.categories) ? p.categories.map((c: { id: number }) => Number(c.id)) : [];
+          const after =
+            action === "set" ? categoryIds : nextCategories(p.categories, action, categoryIds).map((c: { id: number }) => c.id);
           const same = before.join(",") === uniqSorted(after).join(",");
           return { id, before: uniqSorted(before), after: uniqSorted(after), same };
         })
