@@ -7,42 +7,99 @@ import {
   HttpMethod,
   HttpFunctionOptions,
 } from "@azure/functions";
-import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "../shared/wc";
+import { wcGetJSON, wcPostJSON, wcGetAllCategories } from "./shared/wc";
 
-/* ----------------------------- utils ----------------------------- */
-
+/* --------------------------------------------------------------- */
+/* CORS                                                            */
+/* --------------------------------------------------------------- */
+function cors(req: HttpRequest): Record<string, string> {
+  const o = req.headers.get("origin") ?? "";
+  return {
+    "Access-Control-Allow-Origin": o || "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Credentials": "true",
+    ...(o ? { Vary: "Origin" } : {}),
+  };
+}
 const emsg = (e: any) => (e?.message ? String(e.message) : String(e));
 
-function toNum(x: unknown): number | undefined {
-  const n = typeof x === "object" && x !== null && "id" in (x as any) ? Number((x as any).id) : Number(x);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
+/* --------------------------------------------------------------- */
+/* Types                                                           */
+/* --------------------------------------------------------------- */
+type BulkAction = "set" | "add" | "remove";
 
-function parseIds(input: unknown): number[] {
-  const out: number[] = [];
-  if (Array.isArray(input)) {
-    for (const v of input) {
-      const n = toNum(v);
-      if (n) out.push(n);
-    }
-  } else if (typeof input === "string") {
-    for (const part of input.split(/[,\s;]+/)) {
-      const n = toNum(part);
-      if (n) out.push(n);
-    }
-  } else if (typeof input === "number") {
-    const n = toNum(input);
-    if (n) out.push(n);
-  }
-  // uniq + sort
-  return Array.from(new Set(out)).sort((a, b) => a - b);
-}
-
-function uniqSorted(nums: number[]): number[] {
-  return Array.from(new Set(nums)).sort((a, b) => a - b);
-}
+type BulkBody = {
+  productIds?: unknown;
+  action?: unknown;
+  categoryIds?: unknown;
+  dryRun?: unknown;
+};
 
 type WCProductLite = { id: number; categories?: Array<{ id: number; name?: string }> };
+
+/* --------------------------------------------------------------- */
+/* Helpers                                                         */
+/* --------------------------------------------------------------- */
+
+function uniqSorted(nums: number[]): number[] {
+  const s = new Set<number>();
+  for (const n of nums) {
+    const v = Number(n);
+    if (Number.isFinite(v) && v > 0) s.add(v);
+  }
+  return Array.from(s).sort((a, b) => a - b);
+}
+
+/** Tar emot array av tal/strings/objekt {id}, eller CSV-string. Returnerar unika ID:n. */
+function parseIdList(input: unknown): number[] {
+  const out: number[] = [];
+
+  if (Array.isArray(input)) {
+    for (const it of input) {
+      if (it == null) continue;
+      if (typeof it === "number" || typeof it === "string") {
+        const v = Number(it);
+        if (Number.isFinite(v) && v > 0) out.push(v);
+      } else if (typeof it === "object" && "id" in (it as any)) {
+        const v = Number((it as any).id);
+        if (Number.isFinite(v) && v > 0) out.push(v);
+      }
+    }
+    return uniqSorted(out);
+  }
+
+  if (typeof input === "string") {
+    // Stöd för "1,2,3" eller "1 2 3"
+    const parts = input.split(/[,\s]+/).filter(Boolean);
+    for (const p of parts) {
+      const v = Number(p);
+      if (Number.isFinite(v) && v > 0) out.push(v);
+    }
+    return uniqSorted(out);
+  }
+
+  // Okänt format
+  return [];
+}
+
+function parseBool(input: unknown): boolean {
+  if (typeof input === "boolean") return input;
+  if (typeof input === "string") return /^(1|true|yes|on)$/i.test(input.trim());
+  if (typeof input === "number") return input === 1;
+  return false;
+}
+
+/** Tillåt även synonymer och fallback. */
+function parseAction(input: unknown): BulkAction | undefined {
+  if (typeof input === "string") {
+    const v = input.trim().toLowerCase();
+    if (v === "set" || v === "replace") return "set";
+    if (v === "add" || v === "append") return "add";
+    if (v === "remove" || v === "delete" || v === "del") return "remove";
+  }
+  return undefined;
+}
 
 async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise<Map<number, WCProductLite>> {
   const map = new Map<number, WCProductLite>();
@@ -66,7 +123,7 @@ async function fetchProductsLite(ids: number[], ctx: InvocationContext): Promise
 
 function nextCategories(
   current: Array<{ id: number }> | undefined,
-  action: "set" | "add" | "remove",
+  action: BulkAction,
   catIds: number[]
 ): Array<{ id: number }> {
   const cur = Array.isArray(current) ? current.map((c) => Number(c.id)) : [];
@@ -79,6 +136,7 @@ function nextCategories(
     for (const id of cats) set.add(id);
     return uniqSorted(Array.from(set)).map((id) => ({ id }));
   }
+
   // remove
   for (const id of cats) set.delete(id);
   return uniqSorted(Array.from(set)).map((id) => ({ id }));
@@ -112,56 +170,99 @@ async function postBatchUpdates(
   return { updated, failed };
 }
 
-/* ----------------------------- function ----------------------------- */
+/* --------------------------------------------------------------- */
+/* Azure Function                                                  */
+/* --------------------------------------------------------------- */
 
-app.http("wc-products-bulk", {
+const opts: HttpFunctionOptions = {
   route: "wc-products-bulk",
   methods: ["POST", "OPTIONS"] as HttpMethod[],
   authLevel: "anonymous",
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    // Preflight – secure-all fyller i CORS-headers
-    if (req.method === "OPTIONS") return { status: 204 };
+    // CORS preflight
+    if (req.method === "OPTIONS") return { status: 204, headers: cors(req) };
 
     let where = "start";
     try {
-      const body: any = await req.json().catch(() => ({}));
-      ctx.log?.("wc-products-bulk body", JSON.stringify(body));
+      const body = (await req.json()) as BulkBody | undefined;
 
-      // Tolerant parsing av fält/format
+      // Tillåt flera nycklar/format från frontenden:
       const productIds =
-        parseIds(body?.productIds ?? body?.ids ?? body?.products) ||
-        []; // accepterar [1, "2", {id:"3"}] eller "1,2,3"
-      const categoryIds =
-        parseIds(body?.categoryIds ?? body?.category_ids ?? body?.categories ?? body?.categoryIDs) || [];
-      const actionRaw = String(body?.action || "set").toLowerCase();
-      const action = (["set", "add", "remove"].includes(actionRaw) ? actionRaw : "set") as "set" | "add" | "remove";
-      const dryRun = !!body?.dryRun;
+        parseIdList(body?.productIds) ||
+        parseIdList((body as any)?.ids) ||
+        parseIdList((body as any)?.products) ||
+        [];
 
+      const action =
+        parseAction(body?.action) ||
+        parseAction((body as any)?.mode) ||
+        parseAction((body as any)?.op) ||
+        ("set" as BulkAction); // defaulta till "set"
+
+      const rawCatInput =
+        (body?.categoryIds ??
+          (body as any)?.categories ??
+          (body as any)?.category_ids ??
+          (body as any)?.catIds ??
+          (body as any)?.cats ??
+          (body as any)?.categoryId ??
+          (body as any)?.category) ?? [];
+      const categoryIds = parseIdList(rawCatInput);
+
+      const dryRun =
+        parseBool(body?.dryRun) ||
+        parseBool((body as any)?.probe) ||
+        parseBool((body as any)?.test) ||
+        false;
+
+      // Grundvalidering
       if (!productIds.length) {
-        return { status: 400, jsonBody: { ok: false, where, error: "productIds saknas/ogiltiga", got: body?.productIds } };
-      }
-      if (!categoryIds.length) {
         return {
           status: 400,
+          headers: cors(req),
+          jsonBody: { ok: false, where, error: "productIds saknas/ogiltiga", received: { productIds: body?.productIds } },
+        };
+      }
+      if (!["set", "add", "remove"].includes(action)) {
+        return { status: 400, headers: cors(req), jsonBody: { ok: false, where, error: "ogiltig action", action } };
+      }
+      if (action !== "set" && !categoryIds.length) {
+        return {
+          status: 400,
+          headers: cors(req),
           jsonBody: {
             ok: false,
             where,
             error: "categoryIds saknas/ogiltiga",
-            got: body?.categoryIds ?? body?.categories,
+            receivedType: typeof rawCatInput,
+            example: rawCatInput,
           },
         };
       }
+      // För "set" tillåt att rensa alla kategorier om listan är tom
+      // (dvs set []).
 
       /* ---------- Validera kategori-IDs mot Woo ---------- */
       where = "validate-categories";
-      const allCats = await wcGetAllCategories();
-      const wooIds = new Set<number>(allCats.map((c) => Number(c.id)).filter((n) => Number.isFinite(n)));
-      const unknownCategoryIds = categoryIds.filter((id) => !wooIds.has(id));
-      if (unknownCategoryIds.length) {
-        return {
-          status: 400,
-          jsonBody: { ok: false, where, error: "Vissa categoryIds finns inte i Woo", unknownCategoryIds },
-        };
+      try {
+        const allCats = await wcGetAllCategories(); // hämtar alla Woo-kategorier (paginerat)
+        const wooIds = new Set<number>(allCats.map((c) => Number(c.id)).filter((n) => Number.isFinite(n)));
+        const unknown = categoryIds.filter((id) => !wooIds.has(id));
+        if (unknown.length) {
+          return {
+            status: 400,
+            headers: cors(req),
+            jsonBody: {
+              ok: false,
+              where,
+              error: "Vissa categoryIds finns inte i Woo",
+              unknownCategoryIds: unknown,
+            },
+          };
+        }
+      } catch (e) {
+        // Om valideringen inte kan utföras (t.ex. nätfel), logga och fortsätt ändå.
+        ctx.warn?.(`kategori-validering hoppades över: ${emsg(e)}`);
       }
 
       /* ---------- Läs produkter ---------- */
@@ -169,24 +270,27 @@ app.http("wc-products-bulk", {
       const prodMap = await fetchProductsLite(productIds, ctx);
       const notFoundIds = productIds.filter((id) => !prodMap.has(id));
 
-      /* ---------- Plan ---------- */
+      /* ---------- Bygg plan ---------- */
       where = "plan";
       const plan = productIds
         .map((id) => {
           const p = prodMap.get(id);
           if (!p) return null;
           const before = Array.isArray(p.categories) ? p.categories.map((c) => Number(c.id)) : [];
-          const after = nextCategories(p.categories, action, categoryIds).map((c) => c.id);
-          const same = before.join(",") === after.join(",");
+          const after = action === "set" ? categoryIds : nextCategories(p.categories, action, categoryIds).map((c) => c.id);
+          const same = before.join(",") === uniqSorted(after).join(",");
           return { id, before: uniqSorted(before), after: uniqSorted(after), same };
         })
         .filter(Boolean) as Array<{ id: number; before: number[]; after: number[]; same: boolean }>;
 
-      const toUpdate = plan.filter((p) => !p.same).map((p) => ({ id: p.id, categories: p.after.map((id) => ({ id })) }));
+      const toUpdate = plan
+        .filter((p) => !p.same)
+        .map((p) => ({ id: p.id, categories: p.after.map((id) => ({ id })) }));
 
       if (dryRun) {
         return {
           status: 200,
+          headers: cors(req),
           jsonBody: {
             ok: true,
             where: "dry-run",
@@ -202,6 +306,7 @@ app.http("wc-products-bulk", {
       if (!toUpdate.length) {
         return {
           status: 200,
+          headers: cors(req),
           jsonBody: {
             ok: true,
             where: "no-op",
@@ -220,6 +325,7 @@ app.http("wc-products-bulk", {
 
       return {
         status: 200,
+        headers: cors(req),
         jsonBody: {
           ok: true,
           where: "done",
@@ -230,8 +336,10 @@ app.http("wc-products-bulk", {
           totalConsidered: plan.length,
         },
       };
-    } catch (e) {
-      return { status: 500, jsonBody: { ok: false, where, error: emsg(e) } };
+    } catch (e: any) {
+      return { status: 500, headers: cors(req), jsonBody: { ok: false, where, error: emsg(e) } };
     }
   },
-} as HttpFunctionOptions);
+};
+
+app.http("wc-products-bulk", opts);
