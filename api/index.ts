@@ -37,6 +37,7 @@ safe("./britpart-getall");
 safe("./britpart-probe");
 safe("./britpart-probe-categories");
 safe("./sync-britpart-categories");
+safe("./britpart-debug");
 
 // === WooCommerce ===
 safe("./wc-categories");
